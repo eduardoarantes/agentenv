@@ -1,0 +1,53 @@
+version: 1
+
+# Marketplaces can be configured with namespaces
+# This allows for multiple marketplace sources
+marketplaces:
+  default:
+    path: ~/.agentenv/marketplace
+    remote: https://github.com/eduardoarantes/claude-code-plugin-marketplace.git
+    ref: main
+
+  # Optional: add custom marketplace
+  custom:
+    path: ~/.agentenv/custom-marketplace
+    remote: https://github.com/myorg/custom-marketplace.git
+    ref: main
+
+# Plugins can reference their namespace
+# If namespace is omitted, "default" is used
+plugins:
+  - name: engineering-standards
+    namespace: default
+  - name: python-agents
+    namespace: default
+  - name: pr-review
+    namespace: custom
+
+# Targets are defined with defaults. You can override specific values.
+# If you only specify the target name, all defaults will be applied.
+targets:
+  # Simple case: use all defaults
+  claude-code: {}
+
+  # Override specific fields: paths and source_mappings override defaults
+  cursor:
+    paths:
+      config: ~/.cursor/extensions  # Override default config path
+
+  # Add custom target with full configuration
+  jetbrains:
+    type: jetbrains-plugin
+    tools: [jetbrains]
+    paths:
+      config: ~/.config/JetBrains
+    source_mappings:
+      skills:
+        - source: ~/.agentenv/marketplace/skills
+          target: plugins/agentenv/skills
+          mode: symlink
+
+sync:
+  onOpen: true
+  refetch: false
+  mode: symlink

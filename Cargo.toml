@@ -1,0 +1,25 @@
+[workspace]
+members = [
+    "crates/agentenv-core",
+    "crates/agentenv-cli",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Eduardo Arantes"]
+license = "MIT"
+repository = "https://github.com/eduardoarantes/agentenv"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = "warn"
+cargo = "warn"
+nursery = "warn"
+pedantic = "warn"
+# Allowed pedantic lints
+useless_vec = "allow"
+module_name_repetitions = "allow"

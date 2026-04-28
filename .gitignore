@@ -1,0 +1,36 @@
+# Rust
+/target/
+**/*.rs.bk
+*.pdb
+
+# IDE
+.vscode/
+.idea/
+.history/
+*.swp
+*.swo
+*~
+.DS_Store
+*.iml
+
+# Node.js / VS Code Extension
+node_modules/
+dist/
+out/
+*.vsix
+.env.local
+
+# Build artifacts
+*.o
+*.a
+*.so
+.cargo/
+
+# Marketplace
+.agentenv/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+*.swp

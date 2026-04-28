@@ -1,0 +1,145 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "agentenv Configuration",
+  "description": "Configuration schema for agentenv (.agentrc.yaml)",
+  "type": "object",
+  "required": ["version", "marketplaces", "targets"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Configuration version"
+    },
+    "marketplaces": {
+      "type": "object",
+      "description": "Marketplaces by namespace",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "required": ["path", "remote"],
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Local path to marketplace cache"
+          },
+          "remote": {
+            "type": "string",
+            "format": "uri",
+            "description": "Remote Git URL for marketplace"
+          },
+          "ref": {
+            "type": "string",
+            "description": "Git reference (branch/tag)",
+            "default": "main"
+          }
+        }
+      }
+    },
+    "plugins": {
+      "type": "array",
+      "description": "Plugins to import from marketplace",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Plugin name"
+          },
+          "namespace": {
+            "type": "string",
+            "description": "Marketplace namespace (defaults to 'default')"
+          },
+          "version": {
+            "type": "string",
+            "description": "Plugin version (defaults to latest)"
+          }
+        }
+      }
+    },
+    "targets": {
+      "type": "object",
+      "description": "Target tools and their configurations",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": ["vscode-extension", "cursor-extension", "jetbrains-plugin"],
+            "description": "Target type"
+          },
+          "tools": {
+            "type": "array",
+            "description": "Which specific tools this target applies to",
+            "items": {
+              "type": "string",
+              "enum": ["claude-code", "cursor", "jetbrains", "generic-vscode"]
+            }
+          },
+          "paths": {
+            "type": "object",
+            "description": "Key paths for this target",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "source_mappings": {
+            "type": "object",
+            "description": "Source-to-target mappings for skills, commands, agents",
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["source", "target"],
+                "additionalProperties": false,
+                "properties": {
+                  "source": {
+                    "type": "string",
+                    "description": "Source path in marketplace"
+                  },
+                  "target": {
+                    "type": "string",
+                    "description": "Target path in tool config"
+                  },
+                  "mode": {
+                    "type": "string",
+                    "enum": ["symlink", "copy"],
+                    "default": "symlink",
+                    "description": "How to install (symlink or copy)"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "sync": {
+      "type": "object",
+      "description": "Sync behavior configuration",
+      "additionalProperties": false,
+      "properties": {
+        "onOpen": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run sync when editor opens"
+        },
+        "refetch": {
+          "type": "boolean",
+          "default": false,
+          "description": "Re-fetch marketplace on sync"
+        },
+        "mode": {
+          "type": "string",
+          "enum": ["symlink", "copy"],
+          "default": "symlink",
+          "description": "Default installation mode"
+        }
+      }
+    }
+  }
+}
