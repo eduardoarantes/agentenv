@@ -89,7 +89,7 @@ fn resolves_plugins_from_local_marketplace_manifests() {
     assert_eq!(resolved[0].name, "my-plugin");
     assert_eq!(resolved[0].version, "1.2.3");
     assert_eq!(resolved[0].namespace, "default");
-    assert!(resolved[0].location.ends_with("plugins/my-plugin"));
+    assert!(Path::new(&resolved[0].location).ends_with("plugins/my-plugin"));
     assert_eq!(resolved[0].metadata["category"], "engineering");
     assert_eq!(resolved[0].capabilities, vec!["skills", "commands"]);
 }

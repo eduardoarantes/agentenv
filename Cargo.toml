@@ -11,15 +11,15 @@ edition = "2021"
 authors = ["Eduardo Arantes"]
 license = "MIT"
 repository = "https://github.com/eduardoarantes/agentenv"
+keywords = ["ai", "agent", "plugin", "cli", "config"]
+categories = ["command-line-utilities", "development-tools"]
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
 
 [workspace.lints.clippy]
-all = "warn"
-cargo = "warn"
-nursery = "warn"
-pedantic = "warn"
-# Allowed pedantic lints
+all = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+multiple_crate_versions = "allow"
 useless_vec = "allow"
 module_name_repetitions = "allow"

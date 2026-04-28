@@ -92,8 +92,8 @@ pub struct SourceMapping {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SyncConfig {
     /// Run sync on editor open
-    #[serde(default)]
-    pub onOpen: bool,
+    #[serde(default, rename = "onOpen")]
+    pub on_open: bool,
 
     /// Re-fetch marketplace on sync
     #[serde(default)]
@@ -155,7 +155,7 @@ impl Config {
 
     /// Get all marketplace namespaces
     pub fn marketplace_namespaces(&self) -> Vec<&str> {
-        self.marketplaces.keys().map(|k| k.as_str()).collect()
+        self.marketplaces.keys().map(String::as_str).collect()
     }
 
     /// Get plugins by namespace
@@ -188,7 +188,7 @@ impl Config {
     pub fn apply_defaults(mut self) -> Self {
         let mut merged_targets = HashMap::new();
 
-        for (name, user_config) in self.targets.into_iter() {
+        for (name, user_config) in self.targets {
             if let Some(default_config) = TargetDefaults::get(&name) {
                 // Merge with defaults: user config takes precedence
                 merged_targets.insert(name, user_config.merge_with_defaults(default_config));
@@ -204,7 +204,7 @@ impl Config {
 
     /// Get all target names
     pub fn target_names(&self) -> Vec<&str> {
-        self.targets.keys().map(|k| k.as_str()).collect()
+        self.targets.keys().map(String::as_str).collect()
     }
 
     /// Get target configuration by name
@@ -221,11 +221,11 @@ impl TargetConfig {
 
     /// Expand path variables (e.g., ~/ to home directory)
     pub fn expand_path(&self, path: &str) -> Result<PathBuf> {
-        let expanded = if path.starts_with("~/") {
+        let expanded = if let Some(rest) = path.strip_prefix("~/") {
             let home = dirs::home_dir().ok_or_else(|| {
                 crate::error::Error::Config("cannot determine home directory".to_string())
             })?;
-            home.join(&path[2..])
+            home.join(rest)
         } else {
             PathBuf::from(path)
         };

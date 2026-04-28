@@ -26,7 +26,7 @@ sync:
     assert_eq!(target.r#type, "vscode-extension");
     assert_eq!(target.tools, vec!["claude-code"]);
     assert!(target.source_mappings.contains_key("skills"));
-    assert!(config.sync.onOpen);
+    assert!(config.sync.on_open);
     assert_eq!(config.sync.mode, "symlink");
 }
 

@@ -55,7 +55,7 @@ jobs:
           node-version: "18"
       - working-directory: ./vscode
         run: |
-          npm ci
+          npm install --no-audit --no-fund
           npm run lint
           npm run compile
 
@@ -64,6 +64,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: rustsec/audit-check-action@v1
+      - uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}

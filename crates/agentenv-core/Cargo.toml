@@ -5,6 +5,9 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+readme = "../../README.md"
+keywords.workspace = true
+categories.workspace = true
 description = "Core library for agentenv - project-scoped AI agent and plugin environment manager"
 
 [dependencies]
