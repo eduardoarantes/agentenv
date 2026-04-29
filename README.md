@@ -101,19 +101,22 @@ marketplaces:
     remote: https://github.com/eduardoarantes/claude-code-plugin-marketplace.git
     ref: main
 
-plugins:
-  - name: engineering-standards
-  - name: python-agents
+# Add plugin entries here, e.g.:
+#   - name: engineering-standards
+plugins: []
 
 targets:
   claude-code: {}
-  cursor: {}
 
 sync:
   onOpen: true
   refetch: true
   mode: symlink
 ```
+
+The plugin list is empty so the first `agentenv sync` succeeds — open
+`.agentrc.yaml` and add plugins as you need them. See the
+[Configuration](#configuration) section below for the full shape.
 
 
 ### 2. Sync the environment
@@ -192,38 +195,40 @@ agentenv init
 Fetch the marketplace, resolve plugins, and reconcile managed links.
 
 ```bash
-agentenv sync
+agentenv sync             # honor sync.refetch from config
+agentenv sync --refetch   # force fetch even if config disables it
+agentenv sync --no-fetch  # skip the network; require an existing local copy
 ```
 
-Expected behavior:
+Behavior:
 
-- Fetch failure should not stop sync if a local marketplace already exists
-- Broken or missing plugins should produce diagnostics
-- Existing managed links should be recreated
-- User-created files should not be deleted
+- Marketplaces missing locally are cloned from `remote` at `ref`.
+- With `sync.refetch: true` (or `--refetch`), existing marketplaces are
+  fetched and reset to `origin/<ref>`. The cache directory is
+  agentenv-managed; don't hand-edit it.
+- Fetch failures are non-fatal when a local copy exists — they surface as
+  warnings and sync continues with the cached content.
+- `--no-fetch` errors out only when a marketplace is missing locally.
+- Broken or missing plugins produce diagnostics.
+- Existing managed links are recreated.
+- User-created files are not deleted.
 
 ---
 
 ### `agentenv list`
 
-List plugins available in the configured marketplace.
+List configured marketplaces, plugins, and targets from `.agentrc.yaml`.
 
 ```bash
 agentenv list
-```
-
-Optional future filters:
-
-```bash
-agentenv list --installed
-agentenv list --target claude-code
 ```
 
 ---
 
 ### `agentenv doctor`
 
-Diagnose project and system state.
+Diagnose project and system state. Exits non-zero when issues are found, so
+it's safe to use as a CI gate.
 
 ```bash
 agentenv doctor
@@ -231,39 +236,39 @@ agentenv doctor
 
 Checks:
 
-- config validity
-- marketplace availability
-- git fetch status
-- plugin existence
-- plugin manifest validity
-- target adapter support
-- broken symlinks
-- destination folder permissions
-- Windows symlink permission issues
-
----
-
-### `agentenv clean`
-
-Remove links previously managed by `agentenv`.
-
-```bash
-agentenv clean
-```
-
-This must not delete unmanaged user files.
+- `.agentrc.yaml` exists and parses
+- each configured marketplace exists locally
+- every selected plugin resolves against its marketplace
+- managed links recorded in `.agentenv/state.json` still exist on disk
 
 ---
 
 ### `agentenv explain`
 
-Explain what would be linked and where.
+Show what `sync` would do without touching the filesystem. Useful for
+debugging and code review.
 
 ```bash
 agentenv explain
 ```
 
-Useful for debugging and CI review.
+Marketplaces are not fetched — the cache must already be populated (run
+`agentenv sync` once first).
+
+---
+
+### `agentenv clean`
+
+Remove every link recorded in `.agentenv/state.json`, then delete the state
+file.
+
+```bash
+agentenv clean
+```
+
+Defensive: only removes symlinks that still point at the source agentenv
+recorded. If you replaced a managed link with your own file, that file is
+left untouched and reported as `skipped`.
 
 ---
 

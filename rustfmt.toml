@@ -11,7 +11,3 @@ remove_nested_parens = true
 match_block_trailing_comma = true
 merge_derives = true
 use_try_shorthand = true
-format_strings = true
-normalize_comments = true
-wrap_comments = true
-comment_width = 80

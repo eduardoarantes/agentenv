@@ -6,6 +6,7 @@
 //! This library provides the foundational logic for managing project-scoped
 //! AI agent and plugin environments.
 
+pub mod clean;
 pub mod config;
 pub mod error;
 pub mod init;
@@ -13,11 +14,12 @@ pub mod loader;
 pub mod marketplace;
 pub mod plugin;
 pub mod resolver;
+pub mod state;
 pub mod symlink;
 pub mod sync;
-pub mod target;
 pub mod targets;
 
+pub use clean::{CleanReport, Cleaner};
 pub use config::{Config, SourceMapping, TargetConfig};
 pub use error::{Error, Result};
 pub use init::Initializer;
@@ -25,7 +27,7 @@ pub use loader::ConfigLoader;
 pub use marketplace::Marketplace;
 pub use plugin::Plugin;
 pub use resolver::{PluginResolver, ResolvedPlugin};
+pub use state::{State, StateLink};
 pub use symlink::{InstallAction, SymlinkManager};
-pub use sync::{SyncReport, Syncer};
-pub use target::Target;
+pub use sync::{SyncPlan, SyncReport, Syncer};
 pub use targets::TargetDefaults;

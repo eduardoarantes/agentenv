@@ -68,9 +68,14 @@ impl SymlinkManager {
             }
         }
 
-        // Remove existing target if it exists
-        if target.exists() || target.is_symlink() {
-            fs::remove_file(target)?;
+        // Remove existing target if it exists. On Windows, directory
+        // symlinks must be removed with `remove_dir`; `remove_file` errors.
+        if let Ok(meta) = fs::symlink_metadata(target) {
+            if meta.file_type().is_symlink() && meta.file_type().is_dir() {
+                fs::remove_dir(target)?;
+            } else {
+                fs::remove_file(target)?;
+            }
         }
 
         // Create symlink

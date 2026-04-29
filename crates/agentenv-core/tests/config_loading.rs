@@ -23,9 +23,14 @@ sync:
     assert_eq!(config.version, 1);
     assert!(config.marketplaces.contains_key("default"));
     assert_eq!(config.plugins.len(), 1);
-    assert_eq!(target.r#type, "vscode-extension");
+    assert_eq!(target.r#type, "claude-code");
     assert_eq!(target.tools, vec!["claude-code"]);
-    assert!(target.source_mappings.contains_key("skills"));
+    assert_eq!(
+        target.source_mappings.get("skills").unwrap()[0]
+            .target
+            .to_string_lossy(),
+        ".claude/skills"
+    );
     assert!(config.sync.on_open);
     assert_eq!(config.sync.mode, "symlink");
 }
@@ -75,8 +80,7 @@ targets:
       config: /custom/vscode/path
     source_mappings:
       skills:
-        - source: ~/.agentenv/marketplace/custom-skills
-          target: .claude-code/custom-skills
+        - target: .claude-code/custom-skills
 "#,
     )
     .unwrap();

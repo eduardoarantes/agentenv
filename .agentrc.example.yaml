@@ -24,28 +24,27 @@ plugins:
   - name: pr-review
     namespace: custom
 
-# Targets are defined with defaults. You can override specific values.
-# If you only specify the target name, all defaults will be applied.
+# Targets define where each capability is installed for each tool. Empty
+# objects pull in the built-in defaults from docs/platform-standards.md;
+# override individual fields to customize.
 targets:
-  # Simple case: use all defaults
+  # All defaults: skills → .claude/skills/, commands → .claude/commands/,
+  # agents → .claude/agents/.
   claude-code: {}
 
-  # Override specific fields: paths and source_mappings override defaults
+  # Override the skills destination but keep default commands/agents.
   cursor:
-    paths:
-      config: ~/.cursor/extensions  # Override default config path
-
-  # Add custom target with full configuration
-  jetbrains:
-    type: jetbrains-plugin
-    tools: [jetbrains]
-    paths:
-      config: ~/.config/JetBrains
     source_mappings:
       skills:
-        - source: ~/.agentenv/marketplace/skills
-          target: plugins/agentenv/skills
-          mode: symlink
+        - target: .cursor/team-skills
+
+  # OpenAI Codex installs skills under the cross-tool .agents/ alias and
+  # subagents under .codex/agents/ as TOML.
+  codex: {}
+
+  # Custom target: Gemini CLI commands are TOML, not Markdown — make sure
+  # plugins shipping commands for this target use .toml leaves.
+  gemini-cli: {}
 
 sync:
   onOpen: true

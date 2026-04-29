@@ -6,19 +6,70 @@
 
 use crate::config::{Config, TargetConfig};
 use crate::error::{Error, Result};
+use crate::marketplace::{EnsureBehavior, EnsureOutcome, Marketplace};
 use crate::resolver::{PluginResolver, ResolvedPlugin};
+use crate::state::{State, StateLink};
 use crate::symlink::{InstallAction, InstallResult, SymlinkManager};
+use std::collections::HashSet;
+use std::ffi::OsString;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Sync engine.
 #[derive(Debug)]
 pub struct Syncer;
 
+/// Marketplace fetch policy for a sync run.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum FetchPolicy {
+    /// Honor `sync.refetch` from the loaded config (default).
+    #[default]
+    FromConfig,
+    /// Always fetch existing marketplaces, regardless of config.
+    Force,
+    /// Never touch the network. Error if a marketplace is missing locally.
+    Skip,
+}
+
+/// Options for a sync run.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct SyncOptions {
+    /// How to treat marketplace remotes during this sync.
+    pub fetch: FetchPolicy,
+}
+
+/// One entry in a sync plan: where a managed link will be created and what it
+/// will point at.
+#[derive(Debug, Clone)]
+pub struct PlannedAction {
+    /// Path the symlink will point at (typically inside a marketplace).
+    pub source: PathBuf,
+    /// Path where the link will be created (typically inside the project).
+    pub target: PathBuf,
+    /// Install mode (`symlink` or `copy`).
+    pub mode: String,
+    /// Target tool name.
+    pub tool: String,
+    /// Owning plugin name.
+    pub plugin: String,
+}
+
+/// What a sync would do, without doing it. Drives `agentenv explain`.
+#[derive(Debug, Default)]
+pub struct SyncPlan {
+    /// Actions that would be executed in order.
+    pub actions: Vec<PlannedAction>,
+    /// Non-fatal warnings discovered while planning.
+    pub warnings: Vec<String>,
+}
+
 /// Outcome of a sync run.
 #[derive(Debug, Default)]
 pub struct SyncReport {
     /// Per-link install results.
     pub installs: Vec<InstallResult>,
+    /// Stale managed links removed because they're no longer in the plan.
+    pub stale_removed: Vec<StateLink>,
     /// Non-fatal warnings (e.g. plugin had no matching target).
     pub warnings: Vec<String>,
 }
@@ -43,80 +94,196 @@ impl SyncReport {
 impl Syncer {
     /// Resolve plugins from the local marketplace and install all link plans.
     ///
-    /// For each resolved plugin, every declared capability is linked into every
-    /// configured target that (a) supports the plugin and (b) defines a
-    /// `source_mappings` entry for that capability. Each plugin's contribution
-    /// is namespaced under its own subdirectory in the destination, so multiple
-    /// plugins can coexist in a single target folder.
+    /// Sync walks **per-leaf**: for each capability folder a plugin declares,
+    /// every immediate child (a skill directory, an agent file, a command
+    /// file, …) is linked into `<rendered_target>/<leaf-name>`. This matches
+    /// the `agentskills.io` convention and tools like Claude Code that expect
+    /// `<scope>/skills/<skill-name>/SKILL.md` at depth 1.
+    ///
+    /// Mappings can use `{plugin}` in `target` to introduce per-plugin
+    /// namespacing on top of the leaf name. The bundled defaults don't —
+    /// leaf names are the unit of identity.
     ///
     /// # Errors
     ///
-    /// Returns an error from [`PluginResolver::resolve_all`] (e.g. unknown
-    /// plugin, missing manifest, unsupported capability) or from
+    /// Returns an error from [`Marketplace::ensure`] (e.g. clone failure,
+    /// offline-mode marketplace missing), from [`PluginResolver::resolve_all`]
+    /// (unknown plugin, missing manifest, unsupported capability) or from
     /// [`SymlinkManager::install`] for unrecoverable issues like an unknown
     /// install mode. Per-link IO failures are recorded in the report rather
     /// than aborting the whole sync.
-    pub fn sync<P: AsRef<Path>>(config: &Config, project_root: P) -> Result<SyncReport> {
+    pub fn sync<P: AsRef<Path>>(
+        config: &Config,
+        project_root: P,
+        options: SyncOptions,
+    ) -> Result<SyncReport> {
         let project_root = project_root.as_ref();
-        let resolved = PluginResolver::resolve_all(config)?;
         let mut report = SyncReport::default();
 
-        for plugin in &resolved {
-            Self::sync_plugin(config, project_root, plugin, &mut report)?;
+        let behavior = ensure_behavior(options.fetch, config.sync.refetch);
+        for (namespace, marketplace) in &config.marketplaces {
+            let outcome = Marketplace::ensure(marketplace, behavior)?;
+            if let EnsureOutcome::FetchFailedReused(reason) = outcome {
+                report.warnings.push(format!(
+                    "marketplace {namespace}: refetch failed, reusing local copy ({reason})"
+                ));
+            }
         }
 
+        let resolved = PluginResolver::resolve_all(config)?;
+        let (actions, warnings) = enumerate_actions(config, project_root, &resolved)?;
+        report.warnings.extend(warnings);
+
+        let mut new_state = State::default();
+        for planned in &actions {
+            let action = InstallAction {
+                source: planned.source.clone(),
+                target: planned.target.clone(),
+                mode: planned.mode.clone(),
+                tool: planned.tool.clone(),
+            };
+
+            let result = SymlinkManager::install(&action)?;
+            if result.success {
+                new_state.links.push(StateLink {
+                    source: planned.source.clone(),
+                    target: planned.target.clone(),
+                    tool: planned.tool.clone(),
+                    mode: planned.mode.clone(),
+                    plugin: planned.plugin.clone(),
+                });
+            }
+            report.installs.push(result);
+        }
+
+        let old_state = State::load(project_root)?;
+        let kept: HashSet<&Path> = new_state
+            .links
+            .iter()
+            .map(|link| link.target.as_path())
+            .collect();
+        for stale in &old_state.links {
+            if kept.contains(stale.target.as_path()) {
+                continue;
+            }
+            match remove_managed_link(stale) {
+                Ok(true) => report.stale_removed.push(stale.clone()),
+                Ok(false) => report.warnings.push(format!(
+                    "left {} alone — it was modified outside agentenv",
+                    stale.target.display()
+                )),
+                Err(err) => report.warnings.push(format!(
+                    "failed to remove stale link {}: {err}",
+                    stale.target.display()
+                )),
+            }
+        }
+
+        new_state.save(project_root)?;
         Ok(report)
     }
 
-    fn sync_plugin(
-        config: &Config,
-        project_root: &Path,
-        plugin: &ResolvedPlugin,
-        report: &mut SyncReport,
-    ) -> Result<()> {
+    /// Build a sync plan without touching the filesystem outside the
+    /// marketplace directories. Marketplaces are not fetched — the caller is
+    /// expected to have run `sync` (or set them up manually) first.
+    pub fn plan<P: AsRef<Path>>(config: &Config, project_root: P) -> Result<SyncPlan> {
+        let project_root = project_root.as_ref();
+        let resolved = PluginResolver::resolve_all(config)?;
+        let (actions, warnings) = enumerate_actions(config, project_root, &resolved)?;
+        Ok(SyncPlan { actions, warnings })
+    }
+}
+
+fn enumerate_actions(
+    config: &Config,
+    project_root: &Path,
+    resolved: &[ResolvedPlugin],
+) -> Result<(Vec<PlannedAction>, Vec<String>)> {
+    let mut actions = Vec::new();
+    let mut warnings = Vec::new();
+
+    for plugin in resolved {
         let plugin_dir = PathBuf::from(&plugin.location);
         let mut linked_any = false;
 
         for capability in &plugin.capabilities {
-            let source = plugin_dir.join(capability);
+            let capability_dir = plugin_dir.join(capability);
+            let leaves = list_capability_leaves(&capability_dir)?;
+            if leaves.is_empty() {
+                continue;
+            }
 
             for (target_name, target) in &config.targets {
                 if !plugin_supports_target(plugin, target_name, target) {
                     continue;
                 }
-
                 let Some(mappings) = target.source_mappings.get(capability) else {
                     continue;
                 };
 
                 for mapping in mappings {
-                    let dest = expand_destination(project_root, &mapping.target)?
-                        .join(&plugin.name);
-
-                    let action = InstallAction {
-                        source: source.clone(),
-                        target: dest,
-                        mode: mapping.mode.clone(),
-                        tool: target_name.clone(),
-                    };
-
-                    let result = SymlinkManager::install(&action)?;
-                    if result.success {
+                    let dest_root =
+                        render_destination(project_root, &mapping.target, &plugin.name)?;
+                    for leaf in &leaves {
+                        actions.push(PlannedAction {
+                            source: capability_dir.join(leaf),
+                            target: dest_root.join(leaf),
+                            mode: mapping.mode.clone(),
+                            tool: target_name.clone(),
+                            plugin: plugin.name.clone(),
+                        });
                         linked_any = true;
                     }
-                    report.installs.push(result);
                 }
             }
         }
 
         if !linked_any && !plugin.capabilities.is_empty() {
-            report.warnings.push(format!(
+            warnings.push(format!(
                 "plugin {} declared capabilities but no target accepted them",
                 plugin.name
             ));
         }
+    }
 
-        Ok(())
+    Ok((actions, warnings))
+}
+
+/// Remove a link that agentenv previously installed, defensively. Returns
+/// `Ok(true)` if the link is gone afterwards; `Ok(false)` if it was modified
+/// outside agentenv and was left alone.
+pub(crate) fn remove_managed_link(link: &StateLink) -> Result<bool> {
+    let path = &link.target;
+    let exists = path.exists() || path.is_symlink();
+    if !exists {
+        return Ok(true);
+    }
+
+    if path.is_symlink() {
+        match fs::read_link(path) {
+            Ok(actual) if actual == link.source => {},
+            Ok(_) => return Ok(false),
+            Err(err) => return Err(Error::Symlink(err.to_string())),
+        }
+        SymlinkManager::remove(path)?;
+        return Ok(true);
+    }
+
+    // Not a symlink — likely a copy install or user-replaced file. Leave it.
+    Ok(false)
+}
+
+fn ensure_behavior(policy: FetchPolicy, config_refetch: bool) -> EnsureBehavior {
+    match policy {
+        FetchPolicy::Force => EnsureBehavior::Refetch,
+        FetchPolicy::Skip => EnsureBehavior::Offline,
+        FetchPolicy::FromConfig => {
+            if config_refetch {
+                EnsureBehavior::Refetch
+            } else {
+                EnsureBehavior::Cache
+            }
+        },
     }
 }
 
@@ -129,25 +296,48 @@ fn plugin_supports_target(
         return true;
     }
 
-    plugin.targets.iter().any(|declared| {
-        declared == target_name || target.tools.iter().any(|tool| tool == declared)
-    })
+    plugin
+        .targets
+        .iter()
+        .any(|declared| declared == target_name || target.tools.iter().any(|tool| tool == declared))
 }
 
-fn expand_destination(project_root: &Path, target: &Path) -> Result<PathBuf> {
-    let target_str = target.to_string_lossy();
+/// List the immediate children of a capability directory.
+///
+/// Hidden entries (names starting with `.`) are skipped so plugin authors can
+/// drop READMEs or `.gitkeep` files inside a capability folder without
+/// polluting the destination. Sorted for deterministic install order.
+fn list_capability_leaves(dir: &Path) -> Result<Vec<OsString>> {
+    let mut entries = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if name.to_string_lossy().starts_with('.') {
+            continue;
+        }
+        entries.push(name);
+    }
+    entries.sort();
+    Ok(entries)
+}
 
-    if let Some(rest) = target_str.strip_prefix("~/") {
+/// Substitute `{plugin}` in `target`, expand `~/`, and resolve relative paths
+/// against `project_root`.
+fn render_destination(project_root: &Path, target: &Path, plugin: &str) -> Result<PathBuf> {
+    let rendered = target.to_string_lossy().replace("{plugin}", plugin);
+
+    if let Some(rest) = rendered.strip_prefix("~/") {
         let home = dirs::home_dir()
             .ok_or_else(|| Error::Config("cannot determine home directory".to_string()))?;
         return Ok(home.join(rest));
     }
 
-    if target.is_absolute() {
-        return Ok(target.to_path_buf());
+    let path = Path::new(&rendered);
+    if path.is_absolute() {
+        return Ok(path.to_path_buf());
     }
 
-    Ok(project_root.join(target))
+    Ok(project_root.join(path))
 }
 
 #[cfg(test)]
@@ -158,6 +348,30 @@ mod tests {
     use std::collections::HashMap;
     use std::fs;
     use tempfile::TempDir;
+
+    /// Per-capability fixture content. `skills` get directory-form leaves
+    /// containing a SKILL.md (matches the agentskills.io spec); other
+    /// capabilities get flat-file leaves.
+    fn populate_capability(plugin_dir: &Path, capability: &str) {
+        let cap_dir = plugin_dir.join(capability);
+        fs::create_dir_all(&cap_dir).unwrap();
+
+        if capability == "skills" {
+            let skill_dir = cap_dir.join(format!("{capability}-leaf"));
+            fs::create_dir_all(&skill_dir).unwrap();
+            fs::write(
+                skill_dir.join("SKILL.md"),
+                "---\nname: skills-leaf\ndescription: test\n---\n",
+            )
+            .unwrap();
+        } else {
+            fs::write(
+                cap_dir.join(format!("{capability}-leaf.md")),
+                "---\nname: leaf\n---\nbody\n",
+            )
+            .unwrap();
+        }
+    }
 
     fn write_plugin(
         marketplace: &Path,
@@ -170,7 +384,7 @@ mod tests {
         let manifest_dir = plugin_dir.join(".claude-plugin");
         fs::create_dir_all(&manifest_dir).unwrap();
         for capability in capabilities {
-            fs::create_dir_all(plugin_dir.join(capability)).unwrap();
+            populate_capability(&plugin_dir, capability);
         }
         let targets_json = targets
             .iter()
@@ -213,7 +427,7 @@ mod tests {
     }
 
     #[test]
-    fn sync_creates_symlinks_for_each_capability() {
+    fn sync_links_each_capability_leaf_at_depth_one() {
         let marketplace = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
         write_plugin(
@@ -231,19 +445,19 @@ mod tests {
             version: None,
         }];
 
-        let report = Syncer::sync(&config, project.path()).unwrap();
+        let report = Syncer::sync(&config, project.path(), SyncOptions::default()).unwrap();
 
         assert_eq!(report.installs.len(), 2);
         assert!(report.all_succeeded());
         assert!(report.warnings.is_empty());
 
-        let skills_link = project.path().join(".claude-code/skills/demo");
-        let commands_link = project.path().join(".claude-code/commands/demo");
-        assert!(skills_link.is_symlink());
-        assert!(commands_link.is_symlink());
+        let skill_link = project.path().join(".claude/skills/skills-leaf");
+        let command_link = project.path().join(".claude/commands/commands-leaf.md");
+        assert!(skill_link.is_symlink());
+        assert!(command_link.is_symlink());
         assert_eq!(
-            fs::read_link(&skills_link).unwrap(),
-            marketplace.path().join("plugins/demo/skills")
+            fs::read_link(&skill_link).unwrap(),
+            marketplace.path().join("plugins/demo/skills/skills-leaf")
         );
     }
 
@@ -265,13 +479,16 @@ mod tests {
             version: None,
         }];
 
-        let first = Syncer::sync(&config, project.path()).unwrap();
-        let second = Syncer::sync(&config, project.path()).unwrap();
+        let first = Syncer::sync(&config, project.path(), SyncOptions::default()).unwrap();
+        let second = Syncer::sync(&config, project.path(), SyncOptions::default()).unwrap();
 
         assert!(first.all_succeeded());
         assert!(second.all_succeeded());
         assert_eq!(first.installs.len(), second.installs.len());
-        assert!(project.path().join(".claude-code/skills/demo").is_symlink());
+        assert!(project
+            .path()
+            .join(".claude/skills/skills-leaf")
+            .is_symlink());
     }
 
     #[test]
@@ -296,7 +513,7 @@ mod tests {
             version: None,
         }];
 
-        let report = Syncer::sync(&config, project.path()).unwrap();
+        let report = Syncer::sync(&config, project.path(), SyncOptions::default()).unwrap();
 
         assert_eq!(report.installs.len(), 1);
         assert!(report.installs[0].success);
@@ -315,19 +532,14 @@ mod tests {
             &["hooks"],
         );
 
-        // Inject a target with a `hooks` source_mapping so plugin resolution
-        // accepts the capability, but install will then have nowhere to land
-        // because no target supports the plugin's declared targets... actually
-        // claude-code is its target — so the warning case is when capability
-        // exists but target doesn't define it. Use a capability the target
-        // doesn't map.
+        // Cursor declares a `hooks` mapping (so resolver accepts the
+        // capability), but the plugin only targets claude-code, which has no
+        // hooks mapping. Result: nothing to install, expect a warning.
         let mut config = base_config(marketplace.path().to_path_buf());
-        // Add a hooks mapping to a different target so resolution succeeds...
         let mut other = TargetDefaults::cursor();
         other.source_mappings.insert(
             "hooks".to_string(),
             vec![SourceMapping {
-                source: PathBuf::from("ignored"),
                 target: PathBuf::from(".cursor/hooks"),
                 mode: "symlink".to_string(),
             }],
@@ -339,9 +551,7 @@ mod tests {
             version: None,
         }];
 
-        // Plugin only supports claude-code, but claude-code lacks `hooks`
-        // mapping; cursor has hooks but plugin doesn't target it.
-        let report = Syncer::sync(&config, project.path()).unwrap();
+        let report = Syncer::sync(&config, project.path(), SyncOptions::default()).unwrap();
 
         assert_eq!(report.installs.len(), 0);
         assert_eq!(report.warnings.len(), 1);
@@ -349,7 +559,7 @@ mod tests {
     }
 
     #[test]
-    fn sync_resolves_absolute_target_paths() {
+    fn sync_honours_plugin_placeholder_when_user_opts_in() {
         let marketplace = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
         let absolute_dest = TempDir::new().unwrap();
@@ -362,13 +572,11 @@ mod tests {
         );
 
         let mut config = base_config(marketplace.path().to_path_buf());
-        // Override skills mapping with an absolute path.
         let target = config.targets.get_mut("claude-code").unwrap();
         target.source_mappings.insert(
             "skills".to_string(),
             vec![SourceMapping {
-                source: PathBuf::from("ignored"),
-                target: absolute_dest.path().to_path_buf(),
+                target: absolute_dest.path().join("{plugin}"),
                 mode: "symlink".to_string(),
             }],
         );
@@ -378,8 +586,35 @@ mod tests {
             version: None,
         }];
 
-        let report = Syncer::sync(&config, project.path()).unwrap();
+        let report = Syncer::sync(&config, project.path(), SyncOptions::default()).unwrap();
         assert!(report.all_succeeded());
-        assert!(absolute_dest.path().join("demo").is_symlink());
+        assert!(absolute_dest.path().join("demo/skills-leaf").is_symlink());
+    }
+
+    #[test]
+    fn sync_skips_hidden_entries_inside_capability_folder() {
+        let marketplace = TempDir::new().unwrap();
+        let project = TempDir::new().unwrap();
+        write_plugin(
+            marketplace.path(),
+            "demo",
+            "1.0.0",
+            &["claude-code"],
+            &["skills"],
+        );
+        // Drop a hidden file alongside the leaf — it should not be linked.
+        fs::write(marketplace.path().join("plugins/demo/skills/.gitkeep"), "").unwrap();
+
+        let mut config = base_config(marketplace.path().to_path_buf());
+        config.plugins = vec![PluginRef {
+            name: "demo".to_string(),
+            namespace: None,
+            version: None,
+        }];
+
+        let report = Syncer::sync(&config, project.path(), SyncOptions::default()).unwrap();
+        assert_eq!(report.installs.len(), 1);
+        assert!(report.all_succeeded());
+        assert!(!project.path().join(".claude/skills/.gitkeep").exists());
     }
 }

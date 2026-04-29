@@ -81,33 +81,37 @@ These agents help coordinate development across the Rust CLI (`agentenv`), core 
 ## Configuration-Driven Target System
 
 ### Target Definition
-Each target is defined as a configuration with `source` and `target` mappings:
+Each target declares the directory under which each capability is installed.
+Sync walks per-leaf: every immediate child of `<plugin>/<capability>/` is
+linked into `<target>/<leaf-name>`. This matches the
+[Agent Skills](https://agentskills.io) convention so tools find skills at
+`<scope>/skills/<name>/SKILL.md` (depth 1).
+
+The optional `{plugin}` placeholder lets users add per-plugin namespacing on
+top of the leaf name. The bundled defaults don't use it — leaf names are the
+unit of identity. See `docs/platform-standards.md` for the full per-tool path
+reference.
 
 ```yaml
 targets:
   claude-code:
-    type: vscode-extension
-    tools: [claude-code]
-    paths:
-      config: ~/.vscode/extensions/github.claude-code
     source_mappings:
       skills:
-        - source: ~/.agentenv/marketplace/skills
-          target: .claude-code/skills
+        - target: .claude/skills
       commands:
-        - source: ~/.agentenv/marketplace/commands
-          target: .claude-code/commands
+        - target: .claude/commands
       agents:
-        - source: ~/.agentenv/marketplace/agents
-          target: .claude-code/agents
+        - target: .claude/agents
 ```
 
 ### Adding New Targets
-To add a new target (e.g., `jetbrains-ide`):
+To add a new target:
 
-1. Add target configuration to `.agentrc.yaml`
-2. Optionally add validation rules to config schema
-3. No code changes needed for basic support
+1. Add a method to `crates/agentenv-core/src/targets/defaults.rs`.
+2. Wire it into `TargetDefaults::get` and `available_targets`.
+3. Document the paths in `docs/platform-standards.md`.
+4. Users can now write `targets: <name>: {}` in `.agentrc.yaml` to pull in
+   defaults, or override individual mappings.
 
 ---
 

@@ -69,16 +69,12 @@
         "properties": {
           "type": {
             "type": "string",
-            "enum": ["vscode-extension", "cursor-extension", "jetbrains-plugin"],
-            "description": "Target type"
+            "description": "Target type identifier (free-form; built-in defaults match the target name)."
           },
           "tools": {
             "type": "array",
-            "description": "Which specific tools this target applies to",
-            "items": {
-              "type": "string",
-              "enum": ["claude-code", "cursor", "jetbrains", "generic-vscode"]
-            }
+            "description": "Specific tools this target applies to.",
+            "items": { "type": "string" }
           },
           "paths": {
             "type": "object",
@@ -89,21 +85,17 @@
           },
           "source_mappings": {
             "type": "object",
-            "description": "Source-to-target mappings for skills, commands, agents",
+            "description": "Per-capability install destinations (skills, commands, agents, etc.). The source is implicit: each plugin contributes <plugin_location>/<capability>.",
             "additionalProperties": {
               "type": "array",
               "items": {
                 "type": "object",
-                "required": ["source", "target"],
+                "required": ["target"],
                 "additionalProperties": false,
                 "properties": {
-                  "source": {
-                    "type": "string",
-                    "description": "Source path in marketplace"
-                  },
                   "target": {
                     "type": "string",
-                    "description": "Target path in tool config"
+                    "description": "Destination directory under the target tool. Use {plugin} to expand the plugin name (e.g. .claude-code/{plugin}/skills). Without {plugin}, all plugins write to the same path and the last sync wins."
                   },
                   "mode": {
                     "type": "string",

@@ -57,7 +57,8 @@ pub struct PluginRef {
 /// Target configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TargetConfig {
-    /// Target type (vscode-extension, cursor-extension, jetbrains-plugin)
+    /// Free-form target type identifier. Built-in defaults set this to the
+    /// target name (e.g. `claude-code`, `cursor`, `codex`).
     #[serde(default)]
     pub r#type: String,
 
@@ -74,12 +75,13 @@ pub struct TargetConfig {
     pub source_mappings: HashMap<String, Vec<SourceMapping>>,
 }
 
-/// Source-to-target mapping for plugins
+/// Plugin-capability mapping for a target tool.
+///
+/// The source side is implicit: every resolved plugin contributes
+/// `<plugin_location>/<capability>`. This struct only describes where a
+/// plugin's capability folder is installed inside the target tool.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceMapping {
-    /// Source path in marketplace
-    pub source: PathBuf,
-
     /// Target path in tool
     pub target: PathBuf,
 
@@ -583,9 +585,14 @@ mod tests {
         let merged = config.apply_defaults();
         let claude_target = merged.get_target("claude-code").unwrap();
 
-        assert_eq!(claude_target.r#type, "vscode-extension");
+        assert_eq!(claude_target.r#type, "claude-code");
         assert!(claude_target.tools.contains(&"claude-code".to_string()));
-        assert!(claude_target.source_mappings.contains_key("skills"));
+        assert_eq!(
+            claude_target.source_mappings.get("skills").unwrap()[0]
+                .target
+                .to_string_lossy(),
+            ".claude/skills"
+        );
         assert!(claude_target.source_mappings.contains_key("commands"));
         assert!(claude_target.source_mappings.contains_key("agents"));
     }
