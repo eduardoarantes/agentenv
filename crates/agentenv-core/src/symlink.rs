@@ -68,14 +68,9 @@ impl SymlinkManager {
             }
         }
 
-        // Remove existing target if it exists. On Windows, directory
-        // symlinks must be removed with `remove_dir`; `remove_file` errors.
-        if let Ok(meta) = fs::symlink_metadata(target) {
-            if meta.file_type().is_symlink() && meta.file_type().is_dir() {
-                fs::remove_dir(target)?;
-            } else {
-                fs::remove_file(target)?;
-            }
+        // Remove existing target if it exists.
+        if fs::symlink_metadata(target).is_ok() {
+            remove_link_or_file(target)?;
         }
 
         // Create symlink
@@ -160,11 +155,14 @@ impl SymlinkManager {
     pub fn remove<P: AsRef<Path>>(path: P) -> Result<()> {
         let path = path.as_ref();
 
-        if !path.exists() && !path.is_symlink() {
-            return Ok(()); // Already removed
-        }
+        let meta = match fs::symlink_metadata(path) {
+            Ok(meta) => meta,
+            Err(_) => return Ok(()), // Already removed.
+        };
 
-        if path.is_dir() {
+        if meta.file_type().is_symlink() {
+            remove_link_or_file(path)?;
+        } else if meta.is_dir() {
             fs::remove_dir_all(path)?;
         } else {
             fs::remove_file(path)?;
@@ -173,7 +171,7 @@ impl SymlinkManager {
         Ok(())
     }
 
-    /// Install a plugin using the specified mode
+    /// Install a plugin using the specified mode.
     pub fn install(action: &InstallAction) -> Result<InstallResult> {
         let result = match action.mode.as_str() {
             "symlink" => Self::create_symlink(&action.source, &action.target),
@@ -212,6 +210,18 @@ impl SymlinkManager {
             success,
             message,
         })
+    }
+}
+
+/// Remove a symlink or regular file from `path`.
+///
+/// On Unix `fs::remove_file` handles both file and directory symlinks. On
+/// Windows `remove_file` rejects directory symlinks (Access Denied) and
+/// `remove_dir` rejects file symlinks, so we try both.
+fn remove_link_or_file(path: &Path) -> std::io::Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(_) => fs::remove_dir(path),
     }
 }
 
