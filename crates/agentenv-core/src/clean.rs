@@ -78,10 +78,7 @@ mod tests {
     }
 
     fn install_link(source: &Path, target: &Path) {
-        if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent).unwrap();
-        }
-        std::os::unix::fs::symlink(source, target).unwrap();
+        crate::symlink::SymlinkManager::create_symlink(source, target).unwrap();
     }
 
     #[test]
@@ -124,8 +121,8 @@ mod tests {
         // User replaces the symlink with one pointing somewhere else.
         let other = source_root.path().join("other");
         fs::create_dir_all(&other).unwrap();
-        fs::remove_file(&target).unwrap();
-        std::os::unix::fs::symlink(&other, &target).unwrap();
+        crate::symlink::SymlinkManager::remove(&target).unwrap();
+        crate::symlink::SymlinkManager::create_symlink(&other, &target).unwrap();
 
         let mut state = State::default();
         state.links.push(make_link(target.clone(), source.clone()));
