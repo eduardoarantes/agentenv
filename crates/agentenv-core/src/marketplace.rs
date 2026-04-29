@@ -189,8 +189,12 @@ pub enum EnsureOutcome {
 }
 
 fn git_clone(remote: &str, path: &Path, refspec: &str) -> Result<()> {
+    // `-c core.autocrlf=false`: marketplace content is agentenv-managed; we
+    // don't want git's CRLF heuristic mangling skill files on Windows.
     let output = Command::new("git")
         .args([
+            "-c",
+            "core.autocrlf=false",
             "clone",
             "--branch",
             refspec,
@@ -212,6 +216,15 @@ fn git_clone(remote: &str, path: &Path, refspec: &str) -> Result<()> {
             String::from_utf8_lossy(&output.stderr).trim()
         )));
     }
+
+    // Persist the autocrlf=false setting so subsequent fetch + reset don't
+    // mangle line endings.
+    let _ = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(["config", "core.autocrlf", "false"])
+        .output();
+
     Ok(())
 }
 
@@ -289,6 +302,7 @@ mod ensure_tests {
         run_git(&workdir, ["config", "user.email", "test@example.com"]);
         run_git(&workdir, ["config", "user.name", "Test"]);
         run_git(&workdir, ["config", "commit.gpgsign", "false"]);
+        run_git(&workdir, ["config", "core.autocrlf", "false"]);
 
         for (rel, contents) in files {
             let dest = workdir.join(rel);
