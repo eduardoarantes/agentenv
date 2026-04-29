@@ -20,7 +20,7 @@ marketplaces:
     ref: main
 
 # Add plugin entries here, e.g.:
-#   - name: engineering-standards
+#   - name: git-simple
 plugins: []
 
 targets:

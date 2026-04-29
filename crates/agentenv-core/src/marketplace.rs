@@ -1,10 +1,33 @@
-use crate::config::MarketplaceConfig;
+use crate::config::{normalize_path, MarketplaceConfig};
 use crate::error::{Error, Result};
-use crate::plugin::PluginManifest;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+/// Capability folders that agentenv recognises inside a plugin directory.
+///
+/// A plugin's capabilities are inferred from which of these folders exist;
+/// there is no per-plugin manifest file.
+const KNOWN_CAPABILITIES: &[&str] = &["agents", "commands", "skills", "hooks"];
+
+/// Top-level marketplace index file (Claude Code marketplace convention).
+#[derive(Debug, Deserialize)]
+struct MarketplaceIndex {
+    #[serde(default)]
+    plugins: Vec<MarketplaceIndexEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MarketplaceIndexEntry {
+    name: String,
+    /// Path to the plugin directory, relative to the marketplace root.
+    source: String,
+    #[serde(default)]
+    version: String,
+    #[serde(default)]
+    description: String,
+}
 
 /// Marketplace for plugins
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,66 +74,61 @@ impl Marketplace {
         self.plugins.iter().find(|p| p.name == name)
     }
 
-    /// Load marketplace plugin manifests from a local marketplace directory.
+    /// Load a marketplace from a local directory.
     ///
-    /// The expected layout is `plugins/<plugin>/.claude-plugin/plugin.json`.
+    /// Reads `<path>/.claude-plugin/marketplace.json` (Claude Code marketplace
+    /// convention) and returns one [`MarketplacePlugin`] per `plugins[]` entry.
+    /// Per-plugin capabilities are inferred from which subdirectories exist
+    /// inside the plugin's `source` folder ([`KNOWN_CAPABILITIES`]).
     ///
     /// # Errors
     ///
-    /// Returns an error if the marketplace path does not exist, plugin entries
-    /// cannot be read, or a manifest is malformed.
+    /// Returns an error if the marketplace index is missing, malformed, or
+    /// references a plugin source directory that does not exist.
     pub fn load_from_path<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let path = path.as_ref();
-        let plugins_dir = path.join("plugins");
+        let root = path.as_ref();
+        let index_path = root.join(".claude-plugin").join("marketplace.json");
 
-        if !plugins_dir.exists() {
+        if !index_path.exists() {
             return Err(Error::PluginResolution(format!(
-                "marketplace plugins directory not found: {}",
-                plugins_dir.display()
+                "marketplace index not found: {}",
+                index_path.display()
             )));
         }
 
-        let mut plugins = Vec::new();
+        let content = fs::read_to_string(&index_path)?;
+        let index: MarketplaceIndex = serde_json::from_str(&content).map_err(|err| {
+            Error::PluginResolution(format!(
+                "invalid marketplace index {}: {err}",
+                index_path.display()
+            ))
+        })?;
 
-        for entry in fs::read_dir(&plugins_dir)? {
-            let entry = entry?;
-            let plugin_dir = entry.path();
-
-            if !plugin_dir.is_dir() {
-                continue;
-            }
-
-            let manifest_path = plugin_dir.join(".claude-plugin").join("plugin.json");
-            if !manifest_path.exists() {
-                let name = plugin_dir
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or("<unknown>");
+        let mut plugins = Vec::with_capacity(index.plugins.len());
+        for entry in index.plugins {
+            let source = normalize_path(&root.join(&entry.source));
+            if !source.is_dir() {
                 return Err(Error::PluginResolution(format!(
-                    "plugin {} is missing manifest: {}",
-                    name,
-                    manifest_path.display()
+                    "plugin {} references missing source directory: {}",
+                    entry.name,
+                    source.display()
                 )));
             }
 
-            let manifest_content = fs::read_to_string(&manifest_path)?;
-            let manifest: PluginManifest =
-                serde_json::from_str(&manifest_content).map_err(|err| {
-                    Error::PluginResolution(format!(
-                        "invalid plugin manifest {}: {}",
-                        manifest_path.display(),
-                        err
-                    ))
-                })?;
+            let capabilities = KNOWN_CAPABILITIES
+                .iter()
+                .filter(|cap| source.join(cap).is_dir())
+                .map(|cap| (*cap).to_string())
+                .collect();
 
             plugins.push(MarketplacePlugin {
-                name: manifest.name,
-                version: manifest.version,
-                description: manifest.description,
-                metadata: manifest.metadata,
-                targets: manifest.targets,
-                capabilities: manifest.capabilities,
-                location: plugin_dir,
+                name: entry.name,
+                version: entry.version,
+                description: entry.description,
+                metadata: serde_json::Value::Null,
+                targets: Vec::new(),
+                capabilities,
+                location: source,
             });
         }
 
@@ -120,12 +138,13 @@ impl Marketplace {
         })
     }
 
-    /// Make sure a marketplace is available on disk under `config.path`.
+    /// Make sure a marketplace is available on disk under
+    /// `config.resolve_path(project_root)`.
     ///
     /// Behaviour depends on the requested `EnsureBehavior` and on whether the
-    /// path already exists. The marketplace cache directory is treated as
-    /// agentenv-managed: refetch operations will reset the working tree to
-    /// `origin/<ref>`. Don't put hand-edited content there.
+    /// resolved path already exists. The marketplace cache directory is
+    /// treated as agentenv-managed: refetch operations will reset the working
+    /// tree to `origin/<ref>`. Don't put hand-edited content there.
     ///
     /// # Errors
     ///
@@ -133,31 +152,34 @@ impl Marketplace {
     /// - Initial clone failure → `Error::Network` (no local copy to fall back
     ///   on).
     /// - `git` not on `PATH` → `Error::Network` with a hint.
-    pub fn ensure(config: &MarketplaceConfig, behavior: EnsureBehavior) -> Result<EnsureOutcome> {
-        let exists = config.path.exists();
+    pub fn ensure(
+        config: &MarketplaceConfig,
+        project_root: &Path,
+        behavior: EnsureBehavior,
+    ) -> Result<EnsureOutcome> {
+        let path = config.resolve_path(project_root)?;
+        let exists = path.exists();
 
         match (exists, behavior) {
             (false, EnsureBehavior::Offline) => Err(Error::Network(format!(
                 "marketplace at {} is missing and offline mode was requested",
-                config.path.display()
+                path.display()
             ))),
             (false, _) => {
-                if let Some(parent) = config.path.parent() {
+                if let Some(parent) = path.parent() {
                     if !parent.as_os_str().is_empty() {
                         fs::create_dir_all(parent)?;
                     }
                 }
-                git_clone(&config.remote, &config.path, &config.r#ref)?;
+                git_clone(&config.remote, &path, &config.r#ref)?;
                 Ok(EnsureOutcome::Cloned)
             },
             (true, EnsureBehavior::Cache) | (true, EnsureBehavior::Offline) => {
                 Ok(EnsureOutcome::Reused)
             },
-            (true, EnsureBehavior::Refetch) => {
-                match git_fetch_and_reset(&config.path, &config.r#ref) {
-                    Ok(()) => Ok(EnsureOutcome::Fetched),
-                    Err(err) => Ok(EnsureOutcome::FetchFailedReused(err.to_string())),
-                }
+            (true, EnsureBehavior::Refetch) => match git_fetch_and_reset(&path, &config.r#ref) {
+                Ok(()) => Ok(EnsureOutcome::Fetched),
+                Err(err) => Ok(EnsureOutcome::FetchFailedReused(err.to_string())),
             },
         }
     }
@@ -353,7 +375,7 @@ mod ensure_tests {
         let local = scratch.path().join("local");
         let config = config_for(&bare, &local, "main");
 
-        let outcome = Marketplace::ensure(&config, EnsureBehavior::Cache).unwrap();
+        let outcome = Marketplace::ensure(&config, scratch.path(), EnsureBehavior::Cache).unwrap();
         assert_eq!(outcome, EnsureOutcome::Cloned);
         assert_eq!(
             fs::read_to_string(local.join("README.md")).unwrap(),
@@ -368,11 +390,11 @@ mod ensure_tests {
         let local = scratch.path().join("local");
         let config = config_for(&bare, &local, "main");
 
-        Marketplace::ensure(&config, EnsureBehavior::Cache).unwrap();
+        Marketplace::ensure(&config, scratch.path(), EnsureBehavior::Cache).unwrap();
         // Tamper with the working tree to confirm Cache leaves it alone.
         fs::write(local.join("README.md"), "tampered\n").unwrap();
 
-        let outcome = Marketplace::ensure(&config, EnsureBehavior::Cache).unwrap();
+        let outcome = Marketplace::ensure(&config, scratch.path(), EnsureBehavior::Cache).unwrap();
         assert_eq!(outcome, EnsureOutcome::Reused);
         assert_eq!(
             fs::read_to_string(local.join("README.md")).unwrap(),
@@ -387,10 +409,10 @@ mod ensure_tests {
         let local = scratch.path().join("local");
         let config = config_for(&bare, &local, "main");
 
-        Marketplace::ensure(&config, EnsureBehavior::Cache).unwrap();
+        Marketplace::ensure(&config, scratch.path(), EnsureBehavior::Cache).unwrap();
         push_followup(scratch.path(), "main", &[("README.md", "v2\n")]);
 
-        let outcome = Marketplace::ensure(&config, EnsureBehavior::Refetch).unwrap();
+        let outcome = Marketplace::ensure(&config, scratch.path(), EnsureBehavior::Refetch).unwrap();
         assert_eq!(outcome, EnsureOutcome::Fetched);
         assert_eq!(fs::read_to_string(local.join("README.md")).unwrap(), "v2\n");
     }
@@ -405,7 +427,7 @@ mod ensure_tests {
             r#ref: "main".to_string(),
         };
 
-        let err = Marketplace::ensure(&config, EnsureBehavior::Offline).unwrap_err();
+        let err = Marketplace::ensure(&config, scratch.path(), EnsureBehavior::Offline).unwrap_err();
         assert!(matches!(err, Error::Network(_)));
         assert!(err.to_string().contains("offline"));
     }
@@ -417,8 +439,8 @@ mod ensure_tests {
         let local = scratch.path().join("local");
         let config = config_for(&bare, &local, "main");
 
-        Marketplace::ensure(&config, EnsureBehavior::Cache).unwrap();
-        let outcome = Marketplace::ensure(&config, EnsureBehavior::Offline).unwrap();
+        Marketplace::ensure(&config, scratch.path(), EnsureBehavior::Cache).unwrap();
+        let outcome = Marketplace::ensure(&config, scratch.path(), EnsureBehavior::Offline).unwrap();
         assert_eq!(outcome, EnsureOutcome::Reused);
     }
 
@@ -429,11 +451,11 @@ mod ensure_tests {
         let local = scratch.path().join("local");
         let config = config_for(&bare, &local, "main");
 
-        Marketplace::ensure(&config, EnsureBehavior::Cache).unwrap();
+        Marketplace::ensure(&config, scratch.path(), EnsureBehavior::Cache).unwrap();
         // Break the remote so the next fetch fails.
         fs::remove_dir_all(&bare).unwrap();
 
-        let outcome = Marketplace::ensure(&config, EnsureBehavior::Refetch).unwrap();
+        let outcome = Marketplace::ensure(&config, scratch.path(), EnsureBehavior::Refetch).unwrap();
         match outcome {
             EnsureOutcome::FetchFailedReused(reason) => {
                 assert!(!reason.is_empty(), "warning reason should be set");

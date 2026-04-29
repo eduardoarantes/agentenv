@@ -127,12 +127,13 @@ fn run_list(project_root: &Path) -> Result<()> {
 
     println!("{}", "Marketplaces:".bold());
     for (namespace, marketplace) in &config.marketplaces {
+        let resolved = marketplace.resolve_path(project_root)?;
         println!(
             "  {} → {} @ {} ({})",
             namespace,
             marketplace.remote,
             marketplace.r#ref,
-            marketplace.path.display()
+            resolved.display()
         );
     }
 
@@ -195,23 +196,33 @@ fn run_doctor(project_root: &Path) -> Result<()> {
     };
 
     for (namespace, marketplace) in &config.marketplaces {
-        if marketplace.path.exists() {
+        let resolved = match marketplace.resolve_path(project_root) {
+            Ok(path) => path,
+            Err(err) => {
+                report_issue(
+                    &mut issues,
+                    format!("marketplace {namespace} path invalid: {err}"),
+                );
+                continue;
+            },
+        };
+        if resolved.exists() {
             report_ok(format!(
                 "marketplace {namespace} present at {}",
-                marketplace.path.display()
+                resolved.display()
             ));
         } else {
             report_issue(
                 &mut issues,
                 format!(
                     "marketplace {namespace} missing at {} (run `agentenv sync` to clone)",
-                    marketplace.path.display()
+                    resolved.display()
                 ),
             );
         }
     }
 
-    match PluginResolver::resolve_all(&config) {
+    match PluginResolver::resolve_all(&config, project_root) {
         Ok(plugins) => report_ok(format!("{} plugin(s) resolved", plugins.len())),
         Err(err) => report_issue(&mut issues, format!("plugin resolution failed: {err}")),
     }

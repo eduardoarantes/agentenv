@@ -13,6 +13,7 @@ dependencies = [
  "colored 2.2.0",
  "predicates",
  "serde",
+ "serde_json",
  "serde_yaml",
  "tempfile",
  "thiserror",

@@ -1,8 +1,8 @@
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::targets::TargetDefaults;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Configuration for agentenv
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -37,6 +37,57 @@ pub struct MarketplaceConfig {
     /// Git reference (branch/tag)
     #[serde(default = "default_ref")]
     pub r#ref: String,
+}
+
+impl MarketplaceConfig {
+    /// Resolve [`MarketplaceConfig::path`] against `project_root`.
+    ///
+    /// - `~/foo` → `$HOME/foo`
+    /// - relative paths → joined with `project_root`
+    /// - absolute paths → returned as-is
+    pub fn resolve_path(&self, project_root: &Path) -> Result<PathBuf> {
+        resolve_marketplace_path(&self.path, project_root)
+    }
+}
+
+fn resolve_marketplace_path(path: &Path, project_root: &Path) -> Result<PathBuf> {
+    let raw = path.to_string_lossy();
+    let joined = if let Some(rest) = raw.strip_prefix("~/") {
+        let home = dirs::home_dir()
+            .ok_or_else(|| Error::Config("cannot determine home directory".to_string()))?;
+        home.join(rest)
+    } else if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        project_root.join(path)
+    };
+    Ok(normalize_path(&joined))
+}
+
+/// Drop `.` segments and collapse `..` segments lexically.
+///
+/// Does not touch the filesystem (unlike `canonicalize`), so it is safe to
+/// call on paths that don't exist yet (e.g. a marketplace cache about to be
+/// cloned).
+pub(crate) fn normalize_path(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => continue,
+            Component::ParentDir => {
+                let popped = out.pop();
+                if !popped {
+                    out.push("..");
+                }
+            },
+            other => out.push(other.as_os_str()),
+        }
+    }
+    if out.as_os_str().is_empty() {
+        out.push(".");
+    }
+    out
 }
 
 /// Plugin reference

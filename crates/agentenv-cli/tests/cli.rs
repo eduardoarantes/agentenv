@@ -8,15 +8,12 @@ fn agentenv() -> Command {
     Command::cargo_bin("agentenv").unwrap()
 }
 
+/// Append a plugin to a Claude Code-style marketplace at `marketplace`.
 fn write_plugin(marketplace: &Path, name: &str, capabilities: &[&str]) {
-    let plugin_dir = marketplace.join("plugins").join(name);
-    let manifest_dir = plugin_dir.join(".claude-plugin");
-    fs::create_dir_all(&manifest_dir).unwrap();
+    let plugin_dir = marketplace.join(name);
     for capability in capabilities {
         let cap_dir = plugin_dir.join(capability);
         fs::create_dir_all(&cap_dir).unwrap();
-        // Each capability needs at least one leaf so the per-leaf sync has
-        // something to install.
         if *capability == "skills" {
             let skill_dir = cap_dir.join("demo-skill");
             fs::create_dir_all(&skill_dir).unwrap();
@@ -29,18 +26,35 @@ fn write_plugin(marketplace: &Path, name: &str, capabilities: &[&str]) {
             fs::write(cap_dir.join("demo-leaf.md"), "leaf body\n").unwrap();
         }
     }
-    let capabilities_json = capabilities
-        .iter()
-        .map(|c| format!(r#""{c}""#))
-        .collect::<Vec<_>>()
-        .join(", ");
-    fs::write(
-        manifest_dir.join("plugin.json"),
-        format!(
-            r#"{{"name":"{name}","version":"1.0.0","description":"{name}","targets":["claude-code"],"capabilities":[{capabilities_json}],"metadata":{{}}}}"#
-        ),
-    )
-    .unwrap();
+
+    let claude_dir = marketplace.join(".claude-plugin");
+    fs::create_dir_all(&claude_dir).unwrap();
+    let index_path = claude_dir.join("marketplace.json");
+
+    let mut entries: Vec<serde_json::Value> = if index_path.exists() {
+        let raw = fs::read_to_string(&index_path).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        value
+            .get("plugins")
+            .and_then(|p| p.as_array())
+            .cloned()
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    entries.push(serde_json::json!({
+        "name": name,
+        "source": format!("./{name}"),
+        "version": "1.0.0",
+        "description": name,
+    }));
+
+    let index = serde_json::json!({
+        "name": "test-marketplace",
+        "owner": {"name": "test"},
+        "plugins": entries,
+    });
+    fs::write(&index_path, serde_json::to_string_pretty(&index).unwrap()).unwrap();
 }
 
 #[test]

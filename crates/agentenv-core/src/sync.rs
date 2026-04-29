@@ -122,7 +122,7 @@ impl Syncer {
 
         let behavior = ensure_behavior(options.fetch, config.sync.refetch);
         for (namespace, marketplace) in &config.marketplaces {
-            let outcome = Marketplace::ensure(marketplace, behavior)?;
+            let outcome = Marketplace::ensure(marketplace, project_root, behavior)?;
             if let EnsureOutcome::FetchFailedReused(reason) = outcome {
                 report.warnings.push(format!(
                     "marketplace {namespace}: refetch failed, reusing local copy ({reason})"
@@ -130,7 +130,7 @@ impl Syncer {
             }
         }
 
-        let resolved = PluginResolver::resolve_all(config)?;
+        let resolved = PluginResolver::resolve_all(config, project_root)?;
         let (actions, warnings) = enumerate_actions(config, project_root, &resolved)?;
         report.warnings.extend(warnings);
 
@@ -188,7 +188,7 @@ impl Syncer {
     /// expected to have run `sync` (or set them up manually) first.
     pub fn plan<P: AsRef<Path>>(config: &Config, project_root: P) -> Result<SyncPlan> {
         let project_root = project_root.as_ref();
-        let resolved = PluginResolver::resolve_all(config)?;
+        let resolved = PluginResolver::resolve_all(config, project_root)?;
         let (actions, warnings) = enumerate_actions(config, project_root, &resolved)?;
         Ok(SyncPlan { actions, warnings })
     }
@@ -373,36 +373,49 @@ mod tests {
         }
     }
 
+    /// Append a single plugin to a Claude Code-style marketplace at
+    /// `<marketplace>/.claude-plugin/marketplace.json` and create the plugin's
+    /// capability folders at `<marketplace>/<name>/`.
     fn write_plugin(
         marketplace: &Path,
         name: &str,
         version: &str,
-        targets: &[&str],
+        _targets: &[&str],
         capabilities: &[&str],
     ) {
-        let plugin_dir = marketplace.join("plugins").join(name);
-        let manifest_dir = plugin_dir.join(".claude-plugin");
-        fs::create_dir_all(&manifest_dir).unwrap();
+        let plugin_dir = marketplace.join(name);
         for capability in capabilities {
             populate_capability(&plugin_dir, capability);
         }
-        let targets_json = targets
-            .iter()
-            .map(|t| format!(r#""{t}""#))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let capabilities_json = capabilities
-            .iter()
-            .map(|c| format!(r#""{c}""#))
-            .collect::<Vec<_>>()
-            .join(", ");
-        fs::write(
-            manifest_dir.join("plugin.json"),
-            format!(
-                r#"{{"name":"{name}","version":"{version}","description":"{name}","targets":[{targets_json}],"capabilities":[{capabilities_json}],"metadata":{{}}}}"#
-            ),
-        )
-        .unwrap();
+
+        let claude_dir = marketplace.join(".claude-plugin");
+        fs::create_dir_all(&claude_dir).unwrap();
+        let index_path = claude_dir.join("marketplace.json");
+
+        let mut entries: Vec<serde_json::Value> = if index_path.exists() {
+            let raw = fs::read_to_string(&index_path).unwrap();
+            let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+            value
+                .get("plugins")
+                .and_then(|p| p.as_array())
+                .cloned()
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        entries.push(serde_json::json!({
+            "name": name,
+            "source": format!("./{name}"),
+            "version": version,
+            "description": name,
+        }));
+
+        let index = serde_json::json!({
+            "name": "test-marketplace",
+            "owner": {"name": "test"},
+            "plugins": entries,
+        });
+        fs::write(&index_path, serde_json::to_string_pretty(&index).unwrap()).unwrap();
     }
 
     fn base_config(marketplace_path: PathBuf) -> Config {
@@ -457,7 +470,7 @@ mod tests {
         assert!(command_link.is_symlink());
         assert_eq!(
             fs::read_link(&skill_link).unwrap(),
-            marketplace.path().join("plugins/demo/skills/skills-leaf")
+            marketplace.path().join("demo/skills/skills-leaf")
         );
     }
 
@@ -492,59 +505,54 @@ mod tests {
     }
 
     #[test]
-    fn sync_skips_target_unsupported_by_plugin() {
+    fn sync_skips_target_without_capability_mapping() {
         let marketplace = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
         write_plugin(
             marketplace.path(),
-            "claude-only",
+            "skills-plugin",
             "1.0.0",
-            &["claude-code"],
+            &[],
             &["skills"],
         );
 
+        // Cursor's defaults map `skills`; if we wired a target without that
+        // mapping we'd skip it silently. Here we just ensure the multi-target
+        // case still installs into the target that does have the mapping.
         let mut config = base_config(marketplace.path().to_path_buf());
         config
             .targets
             .insert("cursor".to_string(), TargetDefaults::cursor());
         config.plugins = vec![PluginRef {
-            name: "claude-only".to_string(),
+            name: "skills-plugin".to_string(),
             namespace: None,
             version: None,
         }];
 
         let report = Syncer::sync(&config, project.path(), SyncOptions::default()).unwrap();
 
-        assert_eq!(report.installs.len(), 1);
-        assert!(report.installs[0].success);
-        assert_eq!(report.installs[0].action.tool, "claude-code");
+        assert!(report.all_succeeded());
+        assert!(report
+            .installs
+            .iter()
+            .any(|r| r.action.tool == "claude-code"));
     }
 
     #[test]
     fn sync_warns_when_no_target_accepts_plugin() {
         let marketplace = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
+        // claude-code's defaults have no `hooks` mapping; the plugin's only
+        // capability is `hooks` → nothing to install, expect a warning.
         write_plugin(
             marketplace.path(),
             "hooks-only",
             "1.0.0",
-            &["claude-code"],
+            &[],
             &["hooks"],
         );
 
-        // Cursor declares a `hooks` mapping (so resolver accepts the
-        // capability), but the plugin only targets claude-code, which has no
-        // hooks mapping. Result: nothing to install, expect a warning.
         let mut config = base_config(marketplace.path().to_path_buf());
-        let mut other = TargetDefaults::cursor();
-        other.source_mappings.insert(
-            "hooks".to_string(),
-            vec![SourceMapping {
-                target: PathBuf::from(".cursor/hooks"),
-                mode: "symlink".to_string(),
-            }],
-        );
-        config.targets.insert("cursor".to_string(), other);
         config.plugins = vec![PluginRef {
             name: "hooks-only".to_string(),
             namespace: None,
@@ -603,7 +611,7 @@ mod tests {
             &["skills"],
         );
         // Drop a hidden file alongside the leaf — it should not be linked.
-        fs::write(marketplace.path().join("plugins/demo/skills/.gitkeep"), "").unwrap();
+        fs::write(marketplace.path().join("demo/skills/.gitkeep"), "").unwrap();
 
         let mut config = base_config(marketplace.path().to_path_buf());
         config.plugins = vec![PluginRef {

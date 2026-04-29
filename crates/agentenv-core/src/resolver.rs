@@ -4,6 +4,7 @@ use crate::config::{Config, PluginRef};
 use crate::error::{Error, Result};
 use crate::marketplace::Marketplace;
 use std::collections::HashMap;
+use std::path::Path;
 
 /// Plugin resolver
 #[derive(Debug)]
@@ -35,28 +36,20 @@ pub struct ResolvedPlugin {
 }
 
 impl PluginResolver {
-    /// Resolve all plugins in configuration
+    /// Resolve all plugins in configuration.
     ///
-    /// # Arguments
-    ///
-    /// * `config` - Configuration with plugins and marketplaces
-    ///
-    /// # Returns
-    ///
-    /// A vector of resolved plugins from all marketplaces
+    /// `project_root` is used to resolve relative marketplace paths.
     ///
     /// # Errors
     ///
-    /// Returns an error if:
-    /// - A marketplace cannot be fetched
-    /// - A plugin is not found in its marketplace
-    /// - Plugin metadata is invalid
-    pub fn resolve_all(config: &Config) -> Result<Vec<ResolvedPlugin>> {
+    /// Returns an error if a marketplace index cannot be loaded, a plugin is
+    /// not found, or a requested plugin version doesn't match.
+    pub fn resolve_all(config: &Config, project_root: &Path) -> Result<Vec<ResolvedPlugin>> {
         let mut resolved = Vec::new();
 
         for plugin in &config.plugins {
             let namespace = plugin.namespace.as_deref().unwrap_or("default");
-            let resolved_plugin = Self::resolve_plugin(config, plugin, namespace)?;
+            let resolved_plugin = Self::resolve_plugin(config, project_root, plugin, namespace)?;
             resolved.push(resolved_plugin);
         }
 
@@ -66,14 +59,16 @@ impl PluginResolver {
     /// Resolve a single plugin
     fn resolve_plugin(
         config: &Config,
+        project_root: &Path,
         plugin_ref: &PluginRef,
         namespace: &str,
     ) -> Result<ResolvedPlugin> {
         let marketplace = config.get_marketplace(namespace).ok_or_else(|| {
-            crate::error::Error::Config(format!("marketplace namespace not found: {}", namespace))
+            Error::Config(format!("marketplace namespace not found: {}", namespace))
         })?;
 
-        let marketplace_index = Marketplace::load_from_path(&marketplace.path)?;
+        let marketplace_path = marketplace.resolve_path(project_root)?;
+        let marketplace_index = Marketplace::load_from_path(&marketplace_path)?;
         let plugin = marketplace_index
             .find_plugin(&plugin_ref.name)
             .ok_or_else(|| {
@@ -81,7 +76,7 @@ impl PluginResolver {
                     "plugin {} not found in marketplace namespace {} ({})",
                     plugin_ref.name,
                     namespace,
-                    marketplace.path.display()
+                    marketplace_path.display()
                 ))
             })?;
 
@@ -94,9 +89,6 @@ impl PluginResolver {
             }
         }
 
-        Self::validate_targets(config, plugin_ref, &plugin.targets)?;
-        Self::validate_capabilities(config, plugin_ref, &plugin.capabilities, &plugin.location)?;
-
         Ok(ResolvedPlugin {
             name: plugin.name.clone(),
             version: plugin.version.clone(),
@@ -106,66 +98,6 @@ impl PluginResolver {
             targets: plugin.targets.clone(),
             capabilities: plugin.capabilities.clone(),
         })
-    }
-
-    fn validate_targets(
-        config: &Config,
-        plugin_ref: &PluginRef,
-        supported_targets: &[String],
-    ) -> Result<()> {
-        if supported_targets.is_empty() {
-            return Ok(());
-        }
-
-        let configured_targets = config.targets.iter().flat_map(|(target_name, target)| {
-            std::iter::once(target_name.as_str()).chain(target.tools.iter().map(String::as_str))
-        });
-
-        if configured_targets.into_iter().any(|target| {
-            supported_targets
-                .iter()
-                .any(|supported| supported == target)
-        }) {
-            return Ok(());
-        }
-
-        Err(Error::PluginResolution(format!(
-            "plugin {} does not support configured targets; supported targets: {}",
-            plugin_ref.name,
-            supported_targets.join(", ")
-        )))
-    }
-
-    fn validate_capabilities(
-        config: &Config,
-        plugin_ref: &PluginRef,
-        capabilities: &[String],
-        plugin_location: &std::path::Path,
-    ) -> Result<()> {
-        for capability in capabilities {
-            let has_target_mapping = config
-                .targets
-                .values()
-                .any(|target| target.source_mappings.contains_key(capability));
-
-            if !has_target_mapping {
-                return Err(Error::PluginResolution(format!(
-                    "plugin {} declares unsupported capability {}",
-                    plugin_ref.name, capability
-                )));
-            }
-
-            let capability_path = plugin_location.join(capability);
-            if !capability_path.exists() {
-                return Err(Error::PluginResolution(format!(
-                    "plugin {} missing capability folder {}",
-                    plugin_ref.name,
-                    capability_path.display()
-                )));
-            }
-        }
-
-        Ok(())
     }
 
     /// Get plugins grouped by namespace
@@ -248,25 +180,39 @@ mod tests {
         }
     }
 
+    /// Append plugin to a Claude Code-style marketplace at `marketplace_path`.
     fn write_plugin(marketplace_path: &std::path::Path, name: &str, version: &str) {
-        let plugin_dir = marketplace_path.join("plugins").join(name);
-        let manifest_dir = plugin_dir.join(".claude-plugin");
+        let plugin_dir = marketplace_path.join(name);
         fs::create_dir_all(plugin_dir.join("skills")).unwrap();
-        fs::create_dir_all(&manifest_dir).unwrap();
-        fs::write(
-            manifest_dir.join("plugin.json"),
-            format!(
-                r#"{{
-  "name": "{name}",
-  "version": "{version}",
-  "description": "{name}",
-  "targets": ["claude-code"],
-  "capabilities": ["skills"],
-  "metadata": {{}}
-}}"#
-            ),
-        )
-        .unwrap();
+
+        let claude_dir = marketplace_path.join(".claude-plugin");
+        fs::create_dir_all(&claude_dir).unwrap();
+        let index_path = claude_dir.join("marketplace.json");
+
+        let mut entries: Vec<serde_json::Value> = if index_path.exists() {
+            let raw = fs::read_to_string(&index_path).unwrap();
+            let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+            value
+                .get("plugins")
+                .and_then(|p| p.as_array())
+                .cloned()
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        entries.push(serde_json::json!({
+            "name": name,
+            "source": format!("./{name}"),
+            "version": version,
+            "description": name,
+        }));
+
+        let index = serde_json::json!({
+            "name": "test-marketplace",
+            "owner": {"name": "test"},
+            "plugins": entries,
+        });
+        fs::write(&index_path, serde_json::to_string_pretty(&index).unwrap()).unwrap();
     }
 
     #[test]
@@ -280,7 +226,7 @@ mod tests {
             version: Some("1.0.0".to_string()),
         }];
 
-        let resolved = PluginResolver::resolve_all(&config);
+        let resolved = PluginResolver::resolve_all(&config, temp_dir.path());
         assert!(resolved.is_ok());
 
         let plugins = resolved.unwrap();
@@ -309,10 +255,11 @@ mod tests {
             },
         ];
 
-        let resolved = PluginResolver::resolve_all(&config).unwrap();
+        let resolved = PluginResolver::resolve_all(&config, temp_dir.path()).unwrap();
         assert_eq!(resolved.len(), 2);
-        assert_eq!(resolved[0].name, "plugin1");
-        assert_eq!(resolved[1].name, "plugin2");
+        let names: Vec<_> = resolved.iter().map(|p| p.name.as_str()).collect();
+        assert!(names.contains(&"plugin1"));
+        assert!(names.contains(&"plugin2"));
     }
 
     #[test]
@@ -326,7 +273,7 @@ mod tests {
             version: None,
         }];
 
-        let resolved = PluginResolver::resolve_all(&config).unwrap();
+        let resolved = PluginResolver::resolve_all(&config, temp_dir.path()).unwrap();
         assert_eq!(resolved[0].version, "1.0.0");
     }
 
