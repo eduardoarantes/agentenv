@@ -2,7 +2,7 @@
   "name": "agentenv",
   "displayName": "agentenv",
   "description": "Project-scoped AI agent and plugin environment manager for VS Code",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "eduardoarantes",
   "license": "MIT",
   "homepage": "https://github.com/eduardoarantes/agentenv#readme",
@@ -28,6 +28,7 @@
   "categories": [
     "Other"
   ],
+  "icon": "icon.png",
   "activationEvents": [
     "onStartupFinished"
   ],
