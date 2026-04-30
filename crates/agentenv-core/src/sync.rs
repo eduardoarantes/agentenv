@@ -545,13 +545,7 @@ mod tests {
         let project = TempDir::new().unwrap();
         // claude-code's defaults have no `hooks` mapping; the plugin's only
         // capability is `hooks` → nothing to install, expect a warning.
-        write_plugin(
-            marketplace.path(),
-            "hooks-only",
-            "1.0.0",
-            &[],
-            &["hooks"],
-        );
+        write_plugin(marketplace.path(), "hooks-only", "1.0.0", &[], &["hooks"]);
 
         let mut config = base_config(marketplace.path().to_path_buf());
         config.plugins = vec![PluginRef {

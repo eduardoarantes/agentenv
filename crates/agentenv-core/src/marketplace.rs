@@ -412,7 +412,8 @@ mod ensure_tests {
         Marketplace::ensure(&config, scratch.path(), EnsureBehavior::Cache).unwrap();
         push_followup(scratch.path(), "main", &[("README.md", "v2\n")]);
 
-        let outcome = Marketplace::ensure(&config, scratch.path(), EnsureBehavior::Refetch).unwrap();
+        let outcome =
+            Marketplace::ensure(&config, scratch.path(), EnsureBehavior::Refetch).unwrap();
         assert_eq!(outcome, EnsureOutcome::Fetched);
         assert_eq!(fs::read_to_string(local.join("README.md")).unwrap(), "v2\n");
     }
@@ -427,7 +428,8 @@ mod ensure_tests {
             r#ref: "main".to_string(),
         };
 
-        let err = Marketplace::ensure(&config, scratch.path(), EnsureBehavior::Offline).unwrap_err();
+        let err =
+            Marketplace::ensure(&config, scratch.path(), EnsureBehavior::Offline).unwrap_err();
         assert!(matches!(err, Error::Network(_)));
         assert!(err.to_string().contains("offline"));
     }
@@ -440,7 +442,8 @@ mod ensure_tests {
         let config = config_for(&bare, &local, "main");
 
         Marketplace::ensure(&config, scratch.path(), EnsureBehavior::Cache).unwrap();
-        let outcome = Marketplace::ensure(&config, scratch.path(), EnsureBehavior::Offline).unwrap();
+        let outcome =
+            Marketplace::ensure(&config, scratch.path(), EnsureBehavior::Offline).unwrap();
         assert_eq!(outcome, EnsureOutcome::Reused);
     }
 
@@ -455,7 +458,8 @@ mod ensure_tests {
         // Break the remote so the next fetch fails.
         fs::remove_dir_all(&bare).unwrap();
 
-        let outcome = Marketplace::ensure(&config, scratch.path(), EnsureBehavior::Refetch).unwrap();
+        let outcome =
+            Marketplace::ensure(&config, scratch.path(), EnsureBehavior::Refetch).unwrap();
         match outcome {
             EnsureOutcome::FetchFailedReused(reason) => {
                 assert!(!reason.is_empty(), "warning reason should be set");
