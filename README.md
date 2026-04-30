@@ -79,6 +79,24 @@ chmod +x agentenv
 mv agentenv /usr/local/bin/agentenv
 ```
 
+### VS Code extension
+
+The extension wraps the CLI so syncs run automatically when you open or edit a project's `.agentrc.yaml`. The CLI must be installed and on `PATH` first (see the options above).
+
+From the Marketplace:
+
+```bash
+code --install-extension eduardoarantes.agentenv
+```
+
+Or search **agentenv** in the Extensions panel ([Marketplace listing](https://marketplace.visualstudio.com/items?itemName=eduardoarantes.agentenv)).
+
+From a `.vsix` (offline or pre-release builds):
+
+```bash
+code --install-extension agentenv-<version>.vsix
+```
+
 ---
 
 ## Quick start
