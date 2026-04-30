@@ -421,15 +421,20 @@ Writes details to Agentenv output channel
 
 ## Roadmap
 
+Shipped:
+
+- [x] Remote plugin sources beyond one marketplace (multiple namespaces under `marketplaces`)
+- [x] Windows symlink fallback strategies
+- [x] More target adapters (Claude Code, Codex, Cursor, Copilot)
+- [x] JSON Schema for `.agentrc.yaml` (`schemas/agentrc.schema.json`)
+- [x] VS Code extension
+- [x] Dry-run mode (`agentenv explain`)
+
+Planned:
+
 - [ ] Lockfile support: `agentenv.lock`
 - [ ] Plugin version pinning
-- [ ] Remote plugin sources beyond one marketplace
-- [ ] Windows symlink fallback strategies
-- [ ] More target adapters
 - [ ] CI integration: `agentenv check`
-- [ ] JSON Schema for `.agentrc.yaml`
-- [ ] VS Code extension
-- [ ] Dry-run mode
 - [ ] Plugin compatibility metadata
 
 ---
