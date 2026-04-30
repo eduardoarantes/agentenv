@@ -14,16 +14,14 @@ The project values:
 - explicit configuration
 - safe symlink management
 - clear diagnostics
-- adapter-based support for different AI tools
+- target-config-driven support for different AI tools
 - minimal hidden state
 
 Avoid adding behavior that is implicit, global, or difficult to explain.
 
 ---
 
-## Expected architecture
-
-Recommended layout:
+## Repository layout
 
 ```text
 agentenv/
@@ -37,31 +35,26 @@ agentenv/
 
 ### `agentenv-core`
 
-Contains reusable logic:
+Reusable logic, organised by responsibility:
 
-- config parsing
-- marketplace fetching
-- plugin resolution
-- target adapter interfaces
-- symlink reconciliation
-- diagnostics
+- `config` — `.agentrc.yaml` schema and path resolution
+- `loader` — YAML parsing and validation
+- `marketplace` — Git-backed plugin source, including the Claude Code `marketplace.json` index format
+- `resolver` — locating plugins inside a marketplace and inferring their capabilities
+- `targets` — built-in defaults (`claude-code`, `cursor`, `codex`, …) and the `TargetConfig` model that drives where files land
+- `symlink` — idempotent link creation and removal with cross-platform handling
+- `state` — the on-disk record of agentenv-managed links (`.agentenv/state.json`)
+- `sync` — the planner + executor that ties the above together
+- `clean` — removes only links recorded in state
+- `init` — writes a default `.agentrc.yaml`
 
 ### `agentenv-cli`
 
-Contains the CLI entrypoint and commands:
-
-- `init`
-- `sync`
-- `list`
-- `doctor`
-- `clean`
-- `explain`
+Thin CLI entrypoint over `agentenv-core`. Subcommands: `init`, `sync`, `list`, `doctor`, `explain`, `clean`.
 
 ### `vscode`
 
-Contains the VS Code extension.
-
-The extension should call the CLI rather than reimplementing sync logic.
+The VS Code extension. It calls the CLI rather than reimplementing sync logic.
 
 ---
 
@@ -69,7 +62,7 @@ The extension should call the CLI rather than reimplementing sync logic.
 
 - Rust stable
 - Git
-- Node.js and npm/pnpm only if working on the VS Code extension
+- Node.js and npm only if working on the VS Code extension
 
 ---
 
@@ -84,38 +77,45 @@ cargo build
 ## Run locally
 
 ```bash
+cargo run -- init
 cargo run -- sync
+cargo run -- explain   # show what sync would do, without touching the filesystem
 cargo run -- doctor
-cargo run -- explain
+cargo run -- list
+cargo run -- clean
 ```
+
+Use `--project <path>` (global flag) to operate on a project other than the current directory.
 
 ---
 
 ## Format and lint
 
 ```bash
-cargo fmt
-cargo clippy --all-targets --all-features
+cargo fmt --all
+cargo clippy --all-targets --all-features -- -D warnings
 ```
+
+CI enforces both with `-D warnings`, so warnings break the build.
 
 ---
 
 ## Test
 
 ```bash
-cargo test
+cargo test --all
 ```
 
-Integration tests should cover:
+Integration coverage to maintain:
 
-- config parsing
-- invalid config diagnostics
-- marketplace resolution
-- missing plugin behavior
-- symlink creation
-- symlink cleanup
-- target adapter mappings
-- fetch failure fallback behavior
+- config parsing and invalid-config diagnostics
+- marketplace path resolution (`~/`, relative, absolute)
+- marketplace clone / fetch / offline / refetch-failure paths
+- plugin resolution from a `marketplace.json` index
+- capability inference from plugin subdirectories
+- symlink creation and idempotent re-sync
+- symlink cleanup driven by `state.json`
+- target-config defaults and per-target overrides
 
 ---
 
@@ -123,7 +123,7 @@ Integration tests should cover:
 
 ### Config
 
-`.agentrc.yaml` is the project source of truth.
+`.agentrc.yaml` is the project source of truth. See `.agentrc.example.yaml` for a working sample.
 
 Rules:
 
@@ -135,27 +135,36 @@ Rules:
 
 ### Marketplace
 
-A marketplace is an external Git repository containing plugins.
+A marketplace is an external Git repository containing plugins, indexed by a `.claude-plugin/marketplace.json` file at its root (Claude Code marketplace convention).
 
-Rules:
+Marketplace `path` resolution:
 
-- Fetch failures must be recoverable if a local copy exists
-- The user should receive a warning if fetch fails
-- Sync should continue with the existing local marketplace when possible
-- Missing marketplace with failed clone is a hard error
+- `~/foo` → expanded against `$HOME`
+- absolute paths → used as-is
+- relative paths → joined with the project root
+- `.` and `..` segments are collapsed lexically (no filesystem `canonicalize`, so paths that don't yet exist still resolve correctly)
+
+Fetch behaviour:
+
+- Missing marketplace + online → cloned with `--single-branch --branch <ref>` and `core.autocrlf=false`
+- Missing marketplace + offline → hard error
+- Existing marketplace + cache mode → reused as-is
+- Existing marketplace + refetch mode → `git fetch` + `git reset --hard FETCH_HEAD`
+- Refetch network failure with a local copy present → warning, local copy reused
+
+The marketplace cache directory is treated as agentenv-managed: refetch resets the working tree. Don't put hand-edited content there.
 
 ---
 
 ### Plugin resolution
 
-A plugin is selected by name from `.agentrc.yaml`.
+A plugin is selected by `name` (and optional `namespace`) from `.agentrc.yaml`. The resolver:
 
-The resolver should:
+1. Looks up the plugin entry in `<marketplace>/.claude-plugin/marketplace.json`
+2. Resolves its `source` directory relative to the marketplace root
+3. Infers capabilities by checking which of `agents/`, `commands/`, `skills/`, `hooks/` exist as subdirectories of the plugin source
 
-- locate the plugin in the marketplace
-- read its manifest
-- validate expected folders
-- report unsupported or missing capabilities
+There is no per-plugin manifest file. Capabilities are folder-driven, which means adding a new capability folder to a plugin is a no-config change.
 
 ---
 
@@ -163,33 +172,32 @@ The resolver should:
 
 Sync must be idempotent.
 
-Running this multiple times should produce the same final state:
-
 ```bash
 agentenv sync
 agentenv sync
 agentenv sync
 ```
 
+Should produce the same final state every time.
+
 Rules:
 
-- Recreate managed symlinks
+- Recreate managed symlinks; reuse existing ones when they already point at the right source
 - Do not delete unmanaged files
 - Surface conflicts clearly
-- Prefer dry-run support for debugging
+- Use `agentenv explain` to inspect the planned actions without touching the filesystem
 
 ---
 
 ### Symlink ownership
 
-The sync engine must know which files it owns.
+Sync owns only the links recorded in `.agentenv/state.json`. `clean` removes those and nothing else.
 
-Acceptable strategies:
+Acceptable strategies for ownership tracking:
 
-- managed manifest file
-- deterministic managed folder
-- metadata sidecar
-- recognizable prefix combined with explicit tracking
+- the existing `state.json` sidecar (current implementation)
+- a deterministic managed folder
+- a recognizable prefix combined with explicit tracking
 
 Unacceptable:
 
@@ -198,40 +206,24 @@ Unacceptable:
 
 ---
 
-## Target adapters
+## Targets
 
-Each supported tool must have an isolated adapter.
+A target is a `TargetConfig` in `.agentrc.yaml` keyed by tool name. Each target specifies:
 
-A target adapter defines:
+- `type` — free-form identifier (built-in defaults set this to the target name)
+- `tools` — tool ids the target applies to
+- `paths` — optional named path overrides
+- `source_mappings` — for each plugin capability (`skills`, `commands`, `agents`, `hooks`), where on disk to install it and in what mode
 
-- target name
-- destination paths
-- supported plugin capabilities
-- mapping rules
-- validation rules
+Built-in defaults live in `crates/agentenv-core/src/targets/defaults.rs` (`TargetDefaults::claude_code()`, `cursor()`, `codex()`, …) and are applied automatically when a user writes `claude-code: {}` in their config. Users override individual fields by spelling them out in YAML.
 
-Example conceptual trait:
+### Adding a new built-in target
 
-```rust
-trait TargetAdapter {
-    fn name(&self) -> &str;
-    fn resolve_paths(&self, project_root: &Path) -> Result<TargetPaths>;
-    fn supports(&self, plugin: &PluginManifest) -> bool;
-    fn plan_links(&self, plugin: &ResolvedPlugin) -> Result<Vec<LinkPlan>>;
-}
-```
-
----
-
-## Adding a new target
-
-1. Create a new adapter module.
-2. Implement the target adapter interface.
-3. Add tests for path resolution and link planning.
-4. Register the adapter.
-5. Document the target in `README.md`.
-
-Adapter PRs should include examples of the target tool’s expected folder structure.
+1. Add a constructor (e.g. `TargetDefaults::gemini_cli()`) returning a `TargetConfig`.
+2. Wire it into the defaults registry so `<target>: {}` resolves to the new config.
+3. Add tests covering the default `source_mappings` and any path conventions specific to that tool.
+4. Document the target in `README.md` and `docs/platform-standards.md`.
+5. If the target uses a non-Markdown leaf format (TOML, JSON, …), call that out explicitly — plugins shipping for that target must use the right extension.
 
 ---
 
@@ -244,24 +236,29 @@ CLI commands should be:
 - non-interactive by default
 - explicit about filesystem changes
 
-Preferred flags:
+Currently supported subcommands and flags:
 
 ```bash
-agentenv sync --dry-run
-agentenv sync --no-fetch
-agentenv doctor --json
-agentenv explain --target claude-code
+agentenv init [--force]
+agentenv sync [--refetch | --no-fetch]
+agentenv list
+agentenv doctor
+agentenv explain
+agentenv clean
+agentenv [<subcommand>] --project <path>
 ```
+
+`explain` already covers the dry-run use case; prefer adding a new subcommand over piling more flags onto `sync`.
 
 ---
 
 ## Error handling
 
-Use structured errors.
+Use the structured `agentenv_core::Error` type.
 
 Guidelines:
 
-- Marketplace fetch failure: warning if local marketplace exists
+- Marketplace fetch failure: warning if local marketplace exists, error otherwise
 - Missing selected plugin: error
 - Unsupported target: error
 - Unsupported plugin capability for target: warning or error depending on severity
@@ -277,20 +274,20 @@ Error messages should include:
 
 ## Logging and diagnostics
 
+`tracing` is the logging facade. The CLI installs a default subscriber filtered to `agentenv=info`; bump it via `RUST_LOG=agentenv=debug` for verbose output.
+
 Recommended levels:
 
-- `info`: normal operations
-- `warn`: recoverable issues
-- `error`: failed operations
-- `debug`: detailed resolution and link planning
-
-Machine-readable output should be supported for CI in the future.
+- `info` — normal operations
+- `warn` — recoverable issues
+- `error` — failed operations
+- `debug` — detailed resolution and link planning
 
 ---
 
 ## Commit convention
 
-Use conventional commits:
+Use [Conventional Commits](https://www.conventionalcommits.org/):
 
 - `feat:` new feature
 - `fix:` bug fix
@@ -298,13 +295,14 @@ Use conventional commits:
 - `refactor:` internal change
 - `test:` tests
 - `chore:` maintenance
+- `feat!:` / `fix!:` (or a `BREAKING CHANGE:` footer) for breaking changes
 
 Examples:
 
 ```bash
 git commit -m "feat: add cursor target adapter"
 git commit -m "fix: preserve unmanaged files during clean"
-git commit -m "docs: document marketplace config"
+git commit -m "docs: document marketplace path resolution"
 ```
 
 ---
@@ -314,17 +312,17 @@ git commit -m "docs: document marketplace config"
 Before opening a PR:
 
 ```bash
-cargo fmt
-cargo clippy --all-targets --all-features
-cargo test
+cargo fmt --all
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all
 ```
 
-A good PR includes:
+A good PR:
 
-- a focused change
-- tests when behavior changes
-- documentation updates when user-facing behavior changes
-- clear explanation of design decisions
+- has a focused change
+- adds tests when behavior changes
+- updates documentation when user-facing behavior changes
+- explains design decisions
 
 Avoid:
 
@@ -332,16 +330,16 @@ Avoid:
 - changing config semantics without discussion
 - introducing global side effects
 
+PRs to `main` must pass the full CI matrix (Linux/macOS/Windows test suite, rustfmt, clippy, security audit, VS Code extension build) before they can be merged.
+
 ---
 
 ## Good first issues
 
-Good initial contributions:
-
-- improve diagnostics
-- add dry-run output
+- improve `doctor` diagnostics
+- expand `explain` output
 - add JSON Schema for `.agentrc.yaml`
-- add target adapter tests
+- add target tests covering edge cases
 - improve Windows symlink handling
 - improve README examples
 
@@ -349,7 +347,7 @@ Good initial contributions:
 
 ## Non-goals for early versions
 
-Avoid adding these before the core model is stable:
+Before the core model is stable, avoid:
 
 - cloud-hosted marketplace service
 - plugin execution runtime
@@ -361,15 +359,12 @@ Avoid adding these before the core model is stable:
 
 ## Security considerations
 
-This project manipulates filesystem links and may fetch Git repositories.
+`agentenv` manipulates filesystem links and fetches Git repositories. Contributions should consider:
 
-Contributions should consider:
-
-- path traversal
-- symlink escape attacks
-- unsafe deletion
-- malicious plugin names
-- untrusted marketplace contents
+- path traversal during marketplace path resolution and plugin install
+- symlink escape outside the project root
+- unsafe deletion of unmanaged files
+- malicious plugin or marketplace content
 - shell injection in Git operations
 
 Never execute plugin code during sync.
@@ -378,4 +373,4 @@ Never execute plugin code during sync.
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the project license.
+By contributing, you agree that your contributions will be licensed under the project license (MIT).
