@@ -23,6 +23,10 @@ pub struct Config {
     /// Sync configuration
     #[serde(default)]
     pub sync: SyncConfig,
+
+    /// Clean configuration
+    #[serde(default)]
+    pub clean: CleanConfig,
 }
 
 /// Marketplace configuration
@@ -155,6 +159,28 @@ pub struct SyncConfig {
     /// Sync mode (symlink, copy, etc.)
     #[serde(default = "default_mode")]
     pub mode: String,
+}
+
+/// Clean configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CleanConfig {
+    /// After removing managed links, walk back up each link's ancestor
+    /// directories inside the project root and remove any that are now empty.
+    /// Stops at the project root.
+    #[serde(default = "default_true", rename = "pruneEmptyDirs")]
+    pub prune_empty_dirs: bool,
+}
+
+impl Default for CleanConfig {
+    fn default() -> Self {
+        Self {
+            prune_empty_dirs: true,
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_ref() -> String {
@@ -361,6 +387,7 @@ mod tests {
             plugins: vec![],
             targets: HashMap::new(),
             sync: SyncConfig::default(),
+            clean: CleanConfig::default(),
         };
 
         assert!(config.validate().is_err());
@@ -385,6 +412,7 @@ mod tests {
             plugins: vec![],
             targets,
             sync: SyncConfig::default(),
+            clean: CleanConfig::default(),
         };
 
         assert!(config.validate().is_err());
@@ -422,6 +450,7 @@ mod tests {
             plugins: vec![],
             targets,
             sync: SyncConfig::default(),
+            clean: CleanConfig::default(),
         };
 
         assert!(config.validate().is_ok());
@@ -463,6 +492,7 @@ mod tests {
             }],
             targets,
             sync: SyncConfig::default(),
+            clean: CleanConfig::default(),
         };
 
         assert!(config.validate().is_err());
@@ -504,6 +534,7 @@ mod tests {
             }],
             targets,
             sync: SyncConfig::default(),
+            clean: CleanConfig::default(),
         };
 
         assert!(config.validate().is_ok());
@@ -549,6 +580,7 @@ mod tests {
             plugins: vec![],
             targets,
             sync: SyncConfig::default(),
+            clean: CleanConfig::default(),
         };
 
         assert!(config.get_marketplace("default").is_some());
@@ -584,6 +616,7 @@ mod tests {
             plugins: vec![],
             targets,
             sync: SyncConfig::default(),
+            clean: CleanConfig::default(),
         };
 
         let names = config.target_names();
@@ -609,6 +642,7 @@ mod tests {
             plugins: vec![],
             targets,
             sync: SyncConfig::default(),
+            clean: CleanConfig::default(),
         };
 
         assert!(config.validate().is_ok());
@@ -631,6 +665,7 @@ mod tests {
             plugins: vec![],
             targets,
             sync: SyncConfig::default(),
+            clean: CleanConfig::default(),
         };
 
         let merged = config.apply_defaults();
@@ -668,6 +703,7 @@ mod tests {
             plugins: vec![],
             targets,
             sync: SyncConfig::default(),
+            clean: CleanConfig::default(),
         };
 
         let merged = config.apply_defaults();
@@ -699,6 +735,7 @@ mod tests {
             plugins: vec![],
             targets,
             sync: SyncConfig::default(),
+            clean: CleanConfig::default(),
         };
 
         let merged = config.apply_defaults();

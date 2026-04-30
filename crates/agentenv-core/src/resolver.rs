@@ -177,6 +177,7 @@ mod tests {
             plugins: vec![],
             targets,
             sync: Default::default(),
+            clean: Default::default(),
         }
     }
 

@@ -343,7 +343,7 @@ fn render_destination(project_root: &Path, target: &Path, plugin: &str) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{MarketplaceConfig, PluginRef, SourceMapping, SyncConfig};
+    use crate::config::{CleanConfig, MarketplaceConfig, PluginRef, SourceMapping, SyncConfig};
     use crate::targets::TargetDefaults;
     use std::collections::HashMap;
     use std::fs;
@@ -436,6 +436,7 @@ mod tests {
             plugins: vec![],
             targets,
             sync: SyncConfig::default(),
+            clean: CleanConfig::default(),
         }
     }
 

@@ -50,3 +50,9 @@ sync:
   onOpen: true
   refetch: false
   mode: symlink
+
+clean:
+  # After `agentenv clean` removes managed links, prune any directories inside
+  # the project root that are now empty (e.g. a leftover `.claude/skills/`).
+  # Stops at the project root and never touches dirs that still hold user files.
+  pruneEmptyDirs: true

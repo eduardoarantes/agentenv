@@ -6,8 +6,8 @@
 use agentenv_core::init::CONFIG_FILENAME;
 use agentenv_core::sync::{FetchPolicy, SyncOptions};
 use agentenv_core::{
-    CleanReport, Cleaner, Config, ConfigLoader, Initializer, PluginResolver, State, SyncPlan,
-    SyncReport, Syncer,
+    CleanOptions, CleanReport, Cleaner, Config, ConfigLoader, Initializer, PluginResolver, State,
+    SyncPlan, SyncReport, Syncer,
 };
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -255,7 +255,14 @@ fn run_doctor(project_root: &Path) -> Result<()> {
 }
 
 fn run_clean(project_root: &Path) -> Result<()> {
-    let report = Cleaner::clean(project_root)?;
+    // Best-effort config load: clean still works without an `.agentrc.yaml`,
+    // it just falls back to the default options.
+    let options = load_config(project_root)
+        .map(|config| CleanOptions {
+            prune_empty_dirs: config.clean.prune_empty_dirs,
+        })
+        .unwrap_or_default();
+    let report = Cleaner::clean(project_root, options)?;
     print_clean_report(&report);
     Ok(())
 }
@@ -345,9 +352,13 @@ fn print_clean_report(report: &CleanReport) {
             link.target.display()
         );
     }
+    for dir in &report.pruned_dirs {
+        println!("  {} {}", "pruned".cyan(), dir.display());
+    }
     println!(
-        "{} removed, {} skipped",
+        "{} removed, {} skipped, {} dir(s) pruned",
         report.removed.len(),
-        report.skipped.len()
+        report.skipped.len(),
+        report.pruned_dirs.len()
     );
 }

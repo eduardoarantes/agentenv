@@ -19,8 +19,8 @@ pub mod symlink;
 pub mod sync;
 pub mod targets;
 
-pub use clean::{CleanReport, Cleaner};
-pub use config::{Config, SourceMapping, TargetConfig};
+pub use clean::{CleanOptions, CleanReport, Cleaner};
+pub use config::{CleanConfig, Config, SourceMapping, TargetConfig};
 pub use error::{Error, Result};
 pub use init::Initializer;
 pub use loader::ConfigLoader;
