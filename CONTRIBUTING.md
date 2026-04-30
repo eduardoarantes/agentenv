@@ -100,6 +100,20 @@ CI enforces both with `-D warnings`, so warnings break the build.
 
 ---
 
+## Pre-commit hook
+
+A pre-commit hook is shipped in `.githooks/pre-commit`. It runs `cargo fmt --check` and `cargo clippy -- -D warnings` whenever a commit touches Rust sources, `Cargo.toml`, `Cargo.lock`, or `rustfmt.toml` — matching the CI fmt + clippy gates.
+
+Enable it once per clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+To bypass it for a single commit (not recommended), use `git commit --no-verify`.
+
+---
+
 ## Test
 
 ```bash

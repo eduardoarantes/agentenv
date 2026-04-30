@@ -1,0 +1,13 @@
+#!/bin/sh
+# Pre-commit hook for agentenv. Mirrors the CI fmt + clippy gates.
+# Enable with: git config core.hooksPath .githooks
+
+set -e
+
+if git diff --cached --name-only --diff-filter=ACMR | grep -qE '\.rs$|^Cargo\.(toml|lock)$|^rustfmt\.toml$'; then
+    echo "==> cargo fmt --all -- --check"
+    cargo fmt --all -- --check
+
+    echo "==> cargo clippy --all-targets --all-features -- -D warnings"
+    cargo clippy --all-targets --all-features -- -D warnings
+fi
