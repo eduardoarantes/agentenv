@@ -2,7 +2,7 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/eduardoarantes/agentenv/ci.yml?branch=main&label=CI)](https://github.com/eduardoarantes/agentenv/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/agentenv.svg)](https://crates.io/crates/agentenv)
-[![VS Code Marketplace](https://img.shields.io/visual-studio-marketplace/v/eduardoarantes.agentenv?label=VS%20Code)](https://marketplace.visualstudio.com/items?itemName=eduardoarantes.agentenv)
+[![VS Code Marketplace](https://vsmarketplacebadges.dev/version-short/eduardoarantes.agentenv.svg?label=VS%20Code&color=blue)](https://marketplace.visualstudio.com/items?itemName=eduardoarantes.agentenv)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 > Project-scoped AI agent and plugin environment manager
