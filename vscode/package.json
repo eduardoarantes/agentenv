@@ -50,6 +50,17 @@
           "default": true,
           "description": "Run `agentenv sync` automatically when a workspace with .agentrc.yaml is opened."
         },
+        "agentenv.syncOnConfigChange": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run `agentenv sync` automatically when .agentrc.yaml is modified or created."
+        },
+        "agentenv.configChangeDebounceMs": {
+          "type": "number",
+          "default": 1500,
+          "minimum": 0,
+          "description": "Debounce window (ms) before auto-syncing after a .agentrc.yaml change. Higher values batch rapid saves; lower values feel snappier."
+        },
         "agentenv.refetchOnSync": {
           "type": "boolean",
           "default": false,

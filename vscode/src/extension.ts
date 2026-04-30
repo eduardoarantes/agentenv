@@ -20,10 +20,79 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('agentenv.clean', () => runCleanCommand())
   );
 
+  setupConfigWatcher(context);
   void maybeRunStartupSync();
 }
 
 export function deactivate() {}
+
+const DEFAULT_CONFIG_CHANGE_DEBOUNCE_MS = 1500;
+
+function getConfigChangeDebounceMs(): number {
+  const raw = vscode.workspace
+    .getConfiguration('agentenv')
+    .get<number>('configChangeDebounceMs', DEFAULT_CONFIG_CHANGE_DEBOUNCE_MS);
+  if (!Number.isFinite(raw) || raw < 0) {
+    return DEFAULT_CONFIG_CHANGE_DEBOUNCE_MS;
+  }
+  return raw;
+}
+
+function setupConfigWatcher(context: vscode.ExtensionContext): void {
+  const folder = getPrimaryWorkspaceFolder();
+  if (!folder) {
+    return;
+  }
+  if (!vscode.workspace.getConfiguration('agentenv').get<boolean>('syncOnConfigChange', true)) {
+    return;
+  }
+
+  const pattern = new vscode.RelativePattern(folder, CONFIG_FILENAME);
+  const watcher = vscode.workspace.createFileSystemWatcher(pattern);
+
+  let debounceTimer: NodeJS.Timeout | undefined;
+  let syncing = false;
+  let pending = false;
+
+  const runIfQuiet = async () => {
+    if (syncing) {
+      pending = true;
+      return;
+    }
+    syncing = true;
+    try {
+      do {
+        pending = false;
+        await runSyncCommand({ silentSuccess: true });
+      } while (pending);
+    } finally {
+      syncing = false;
+    }
+  };
+
+  const trigger = () => {
+    if (debounceTimer) {
+      clearTimeout(debounceTimer);
+    }
+    debounceTimer = setTimeout(() => {
+      debounceTimer = undefined;
+      void runIfQuiet();
+    }, getConfigChangeDebounceMs());
+  };
+
+  context.subscriptions.push(
+    watcher,
+    watcher.onDidChange(trigger),
+    watcher.onDidCreate(trigger),
+    {
+      dispose: () => {
+        if (debounceTimer) {
+          clearTimeout(debounceTimer);
+        }
+      },
+    }
+  );
+}
 
 async function maybeRunStartupSync(): Promise<void> {
   const config = vscode.workspace.getConfiguration('agentenv');
