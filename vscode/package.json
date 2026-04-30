@@ -3,11 +3,29 @@
   "displayName": "agentenv",
   "description": "Project-scoped AI agent and plugin environment manager for VS Code",
   "version": "0.1.0",
+  "publisher": "eduardoarantes",
+  "license": "MIT",
+  "homepage": "https://github.com/eduardoarantes/agentenv#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/eduardoarantes/agentenv.git"
+  },
+  "bugs": {
+    "url": "https://github.com/eduardoarantes/agentenv/issues"
+  },
+  "keywords": [
+    "ai",
+    "agents",
+    "claude",
+    "cursor",
+    "codex",
+    "plugins",
+    "marketplace"
+  ],
   "engines": {
     "vscode": "^1.85.0"
   },
   "categories": [
-    "Debuggers",
     "Other"
   ],
   "activationEvents": [
