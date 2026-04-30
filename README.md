@@ -212,7 +212,7 @@ clean:
 |---|---:|---|
 | `version` | Yes | Config schema version. |
 | `marketplaces` | Yes | Marketplace repos keyed by namespace. |
-| `marketplaces.<namespace>.path` | Yes | Local filesystem path to the marketplace repo. |
+| `marketplaces.<namespace>.path` | Yes | Local cache directory where agentenv clones the marketplace repo (from `remote` at `ref`). It's not a path inside the project — it's an agentenv-managed checkout used as a read-only source. Supports `~` (home), absolute paths, and relative paths (resolved against the project root). Refetches reset the working tree to `origin/<ref>`, so don't hand-edit anything inside it. A common choice is `~/.agentenv/marketplace` to share the cache across projects. |
 | `marketplaces.<namespace>.remote` | Yes | Git remote used to clone/fetch the marketplace. |
 | `marketplaces.<namespace>.ref` | No | Branch, tag, or commit to use. Defaults to `main`. |
 | `plugins` | No | List of plugins to import. A plugin without `namespace` uses `default`. |
