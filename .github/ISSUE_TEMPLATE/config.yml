@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question or discussion
+    url: https://github.com/eduardoarantes/agentenv/discussions
+    about: Use Discussions for usage questions, ideas, and general help.
+  - name: Security report
+    url: https://github.com/eduardoarantes/agentenv/security/advisories/new
+    about: Report a security issue privately. Do not file it as a public issue.

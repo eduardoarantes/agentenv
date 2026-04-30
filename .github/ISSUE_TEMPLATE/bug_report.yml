@@ -1,0 +1,86 @@
+name: Bug report
+description: Something in agentenv is broken or behaves unexpectedly
+title: "[bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. Please fill out the sections below — the more detail, the faster we can help.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: One or two sentences describing what went wrong.
+      placeholder: "`agentenv install` fails when the marketplace path uses `~`"
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps. A small `.agentrc.yaml` snippet is ideal.
+      placeholder: |
+        1. `.agentrc.yaml` contains: ...
+        2. Run `agentenv install`
+        3. See error
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+      description: Include the full error output if there is one.
+      render: shell
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: agentenv version
+      description: Output of `agentenv --version` (or commit hash if built from source).
+      placeholder: "0.1.0 / commit abc1234"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Linux
+        - Windows
+        - Other (specify in additional context)
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Logs, screenshots, related issues, anything else useful.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-submission checks
+      options:
+        - label: I searched existing issues and didn't find a duplicate
+          required: true
+        - label: I'm running a recent version of agentenv (latest release or `main`)
+          required: true
