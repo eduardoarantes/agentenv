@@ -23,8 +23,40 @@
       {
         "command": "agentenv.doctor",
         "title": "agentenv: Doctor"
+      },
+      {
+        "command": "agentenv.openConfig",
+        "title": "agentenv: Open Config"
+      },
+      {
+        "command": "agentenv.listPlugins",
+        "title": "agentenv: List Plugins"
+      },
+      {
+        "command": "agentenv.clean",
+        "title": "agentenv: Clean Managed Links"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "agentenv",
+      "properties": {
+        "agentenv.path": {
+          "type": "string",
+          "default": "agentenv",
+          "description": "Path to the agentenv binary. Resolved against $PATH if not absolute."
+        },
+        "agentenv.syncOnOpen": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run `agentenv sync` automatically when a workspace with .agentrc.yaml is opened."
+        },
+        "agentenv.refetchOnSync": {
+          "type": "boolean",
+          "default": false,
+          "description": "Pass --refetch when invoking sync, forcing a marketplace refresh."
+        }
+      }
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run esbuild-base -- --minify",
@@ -33,8 +65,6 @@
     "esbuild-watch": "npm run esbuild-base -- --sourcemap --watch",
     "compile": "npm run esbuild",
     "lint": "eslint src --ext ts",
-    "pretest": "npm run compile && npm run lint",
-    "test": "node ./out/test/runTest.js",
     "format": "prettier --write src"
   },
   "devDependencies": {
