@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.0
+
+- First release published via the `publish-vscode` GitHub Actions workflow
+
 ## 0.2.0
 
 - Added extension icon
