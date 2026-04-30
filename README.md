@@ -1,10 +1,34 @@
 # agentenv
 
+[![CI](https://img.shields.io/github/actions/workflow/status/eduardoarantes/agentenv/ci.yml?branch=main&label=CI)](https://github.com/eduardoarantes/agentenv/actions/workflows/ci.yml)
+[![Crates.io](https://img.shields.io/crates/v/agentenv.svg)](https://crates.io/crates/agentenv)
+[![VS Code Marketplace](https://img.shields.io/visual-studio-marketplace/v/eduardoarantes.agentenv?label=VS%20Code)](https://marketplace.visualstudio.com/items?itemName=eduardoarantes.agentenv)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 > Project-scoped AI agent and plugin environment manager
 
 `agentenv` lets you define, version, and reproduce the AI capabilities of a project across tools like Claude Code, Codex, Cursor, and others.
 
 It works similarly to `.nvmrc`, `.jenv`, or `.tool-versions`, but instead of runtime versions, it manages **agents, commands, skills, and plugins**.
+
+---
+
+## Table of contents
+
+- [Problem](#problem)
+- [Solution](#solution)
+- [How it works](#how-it-works)
+- [Installation](#installation)
+- [Quick start](#quick-start)
+- [Configuration](#configuration)
+- [Commands](#commands)
+- [Marketplace structure](#marketplace-structure)
+- [Target adapters](#target-adapters)
+- [VS Code integration](#vs-code-integration)
+- [Design principles](#design-principles)
+- [Roadmap](#roadmap)
+- [Non-goals](#non-goals)
+- [License](#license)
 
 ---
 
