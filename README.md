@@ -201,6 +201,9 @@ sync:
   onOpen: true
   refetch: true
   mode: symlink
+
+clean:
+  pruneEmptyDirs: true
 ```
 
 ### Fields
@@ -217,6 +220,7 @@ sync:
 | `sync.onOpen` | No | Whether editor integrations should sync on workspace open. |
 | `sync.refetch` | No | Whether to fetch marketplace updates before syncing. |
 | `sync.mode` | No | Link strategy. Initially `symlink`. |
+| `clean.pruneEmptyDirs` | No | After `agentenv clean` removes managed links, prune any now-empty directories inside the project root. Stops at the project root and never touches dirs that still hold user files. Defaults to `true`. |
 
 ---
 
@@ -312,6 +316,11 @@ Defensive: only removes symlinks that still point at the source agentenv
 recorded. If you replaced a managed link with your own file, that file is
 left untouched and reported as `skipped`.
 
+After links are removed, `clean` prunes any now-empty directories inside the
+project root (e.g. a leftover `.claude/skills/`). It stops at the project
+root and never touches dirs that still hold user files. Disable via
+`clean.pruneEmptyDirs: false` in `.agentrc.yaml`.
+
 ---
 
 ## Marketplace structure
@@ -363,7 +372,9 @@ src/
 
 ## VS Code integration
 
-The VS Code extension should be thin. The CLI remains the source of truth.
+The VS Code extension is thin — the CLI remains the source of truth. Install
+it from the [Marketplace](https://marketplace.visualstudio.com/items?itemName=eduardoarantes.agentenv)
+(see [Installation](#installation)).
 
 On workspace open:
 
@@ -377,12 +388,23 @@ Shows warning only on failure
 Writes details to Agentenv output channel
 ```
 
-Suggested commands:
+### Commands
 
-- `Agentenv: Sync`
-- `Agentenv: Doctor`
-- `Agentenv: Open Config`
-- `Agentenv: List Plugins`
+- `agentenv: Sync Plugins`
+- `agentenv: Doctor`
+- `agentenv: Open Config`
+- `agentenv: List Plugins`
+- `agentenv: Clean Managed Links`
+
+### Settings
+
+| Setting | Default | Description |
+|---|---|---|
+| `agentenv.path` | `agentenv` | Path to the agentenv binary. Resolved against `$PATH` if not absolute. |
+| `agentenv.syncOnOpen` | `true` | Run `agentenv sync` automatically when a workspace with `.agentrc.yaml` is opened. |
+| `agentenv.syncOnConfigChange` | `true` | Run `agentenv sync` automatically when `.agentrc.yaml` is modified or created. |
+| `agentenv.configChangeDebounceMs` | `1500` | Debounce window (ms) before auto-syncing after a `.agentrc.yaml` change. Higher values batch rapid saves; lower values feel snappier. |
+| `agentenv.refetchOnSync` | `false` | Pass `--refetch` when invoking sync, forcing a marketplace refresh. |
 
 ---
 
