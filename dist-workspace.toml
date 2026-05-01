@@ -19,6 +19,8 @@ hosting = "github"
 install-updater = false
 # Homebrew tap to publish the formula into
 tap = "eduardoarantes/homebrew-agentenv"
+# npm scope (the unscoped name "agentenv" is blocked by similarly-named "agent-env")
+npm-scope = "@eduardoarantes"
 # Publishers to enable on tagged releases
 publish-jobs = ["homebrew", "npm"]
 # Build the full matrix on PRs (no publish) so platform breakage is caught pre-tag

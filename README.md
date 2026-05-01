@@ -89,7 +89,7 @@ brew install eduardoarantes/agentenv/agentenv
 ### npm (cross-platform)
 
 ```bash
-npm install -g agentenv
+npm install -g @eduardoarantes/agentenv
 ```
 
 ### Rust / Cargo
