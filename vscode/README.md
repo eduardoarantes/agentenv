@@ -15,9 +15,11 @@ It works similarly to `.nvmrc` or `.tool-versions`, but instead of runtime versi
 
 ## Requirements
 
-You must have the `agentenv` CLI installed and on your `PATH`. Install it via:
+You must have the `agentenv` CLI installed and on your `PATH`. Install it via one of:
 
 ```bash
+brew install eduardoarantes/agentenv/agentenv
+npm install -g @eduardoarantes/agentenv
 cargo install agentenv
 ```
 

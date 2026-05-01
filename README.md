@@ -1,7 +1,9 @@
 # agentenv
 
 [![CI](https://img.shields.io/github/actions/workflow/status/eduardoarantes/agentenv/ci.yml?branch=main&label=CI)](https://github.com/eduardoarantes/agentenv/actions/workflows/ci.yml)
-[![Crates.io](https://img.shields.io/crates/v/agentenv.svg)](https://crates.io/crates/agentenv)
+[![Crates.io](https://img.shields.io/crates/v/agentenv.svg?label=crates.io)](https://crates.io/crates/agentenv)
+[![npm](https://img.shields.io/npm/v/@eduardoarantes/agentenv.svg?label=npm)](https://www.npmjs.com/package/@eduardoarantes/agentenv)
+[![Homebrew](https://img.shields.io/badge/homebrew-tap-orange?logo=homebrew)](https://github.com/eduardoarantes/homebrew-agentenv)
 [![VS Code Marketplace](https://vsmarketplacebadges.dev/version-short/eduardoarantes.agentenv.svg?label=VS%20Code&color=blue)](https://marketplace.visualstudio.com/items?itemName=eduardoarantes.agentenv)
 [![Open VSX](https://img.shields.io/open-vsx/v/eduardoarantes/agentenv?label=Open%20VSX&color=blue)](https://open-vsx.org/extension/eduardoarantes/agentenv)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
