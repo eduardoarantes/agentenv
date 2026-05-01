@@ -21,3 +21,5 @@ install-updater = false
 tap = "eduardoarantes/homebrew-agentenv"
 # Publishers to enable on tagged releases
 publish-jobs = ["homebrew", "npm"]
+# Build the full matrix on PRs (no publish) so platform breakage is caught pre-tag
+pr-run-mode = "upload"
