@@ -10,6 +10,7 @@ version = "0.1.0"
 edition = "2021"
 authors = ["Eduardo Arantes"]
 license = "MIT"
+homepage = "https://github.com/eduardoarantes/agentenv"
 repository = "https://github.com/eduardoarantes/agentenv"
 keywords = ["ai", "agent", "plugin", "cli", "config"]
 categories = ["command-line-utilities", "development-tools"]

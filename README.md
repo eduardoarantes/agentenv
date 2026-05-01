@@ -83,8 +83,13 @@ The marketplace is treated as a source of truth. The project config decides whic
 ### macOS / Linux with Homebrew
 
 ```bash
-brew tap your-org/agentenv
-brew install agentenv
+brew install eduardoarantes/agentenv/agentenv
+```
+
+### npm (cross-platform)
+
+```bash
+npm install -g agentenv
 ```
 
 ### Rust / Cargo
