@@ -11,6 +11,7 @@
 
 use crate::config::{MarketplaceConfig, PluginRef};
 use crate::error::{Error, Result};
+use crate::resolver::ResolvedPlugin;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -27,6 +28,65 @@ pub struct ClaudeConfigImport {
     /// Hooks preserved verbatim from `hooks`. May be `Value::Null` if neither
     /// settings file declared any.
     pub hooks: Value,
+}
+
+/// Name used for the synthesized local-`.claude/` plugin.
+pub const LOCAL_CLAUDE_PLUGIN_NAME: &str = "local-claude";
+
+/// Namespace used for the synthesized local-`.claude/` plugin.
+const LOCAL_CLAUDE_NAMESPACE: &str = "_local";
+
+/// Synthesize a [`ResolvedPlugin`] from the project's `.claude/` directory so
+/// inline-authored agents/skills/commands get propagated to non-Claude targets
+/// alongside marketplace plugins.
+///
+/// Scans `<project_root>/.claude/{agents,skills,commands}` for non-hidden
+/// entries. If at least one capability has content, returns a synthetic
+/// plugin whose `location` is the project's `.claude/` directory; the sync
+/// engine then walks it the same way it walks marketplace plugins. Returns
+/// `None` when nothing inline lives under `.claude/` — callers should treat
+/// that as "no local plugin to sync."
+///
+/// The `claude-code` target is dropped during `merge_claude_import`, so the
+/// synthesized plugin's leaves only ever land in other targets (cursor,
+/// codex, copilot, …) — Claude reads its own `.claude/` directly.
+pub fn synthesize_local_claude_plugin(project_root: &Path) -> Option<ResolvedPlugin> {
+    let claude_dir = project_root.join(".claude");
+    if !claude_dir.is_dir() {
+        return None;
+    }
+
+    let mut capabilities = Vec::new();
+    for cap in ["agents", "skills", "commands"] {
+        if capability_has_entries(&claude_dir.join(cap)) {
+            capabilities.push(cap.to_string());
+        }
+    }
+    if capabilities.is_empty() {
+        return None;
+    }
+
+    Some(ResolvedPlugin {
+        name: LOCAL_CLAUDE_PLUGIN_NAME.to_string(),
+        version: "0.0.0".to_string(),
+        namespace: LOCAL_CLAUDE_NAMESPACE.to_string(),
+        location: claude_dir.to_string_lossy().to_string(),
+        metadata: Value::Null,
+        targets: Vec::new(),
+        capabilities,
+    })
+}
+
+/// `true` iff `dir` is a directory containing at least one non-hidden entry.
+/// Hidden entries (leading `.`) are ignored to match the sync engine's
+/// own `list_capability_leaves` rules.
+fn capability_has_entries(dir: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    entries
+        .flatten()
+        .any(|entry| !entry.file_name().to_string_lossy().starts_with('.'))
 }
 
 /// Reader for Claude `settings.json` files.
@@ -470,5 +530,66 @@ mod tests {
         let import = ClaudeConfigLoader::load_with_home(project.path(), home.path()).unwrap();
         assert_eq!(import.plugins.len(), 1);
         assert!(import.marketplaces.is_empty());
+    }
+
+    fn write_file(path: &Path, contents: &str) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, contents).unwrap();
+    }
+
+    #[test]
+    fn synthesize_returns_none_when_no_claude_dir() {
+        let project = TempDir::new().unwrap();
+        assert!(synthesize_local_claude_plugin(project.path()).is_none());
+    }
+
+    #[test]
+    fn synthesize_returns_none_when_capability_dirs_are_empty() {
+        let project = TempDir::new().unwrap();
+        std::fs::create_dir_all(project.path().join(".claude/agents")).unwrap();
+        std::fs::create_dir_all(project.path().join(".claude/skills")).unwrap();
+        // Hidden entries should not count as content.
+        write_file(&project.path().join(".claude/agents/.gitkeep"), "");
+        assert!(synthesize_local_claude_plugin(project.path()).is_none());
+    }
+
+    #[test]
+    fn synthesize_picks_up_agents_and_skills() {
+        let project = TempDir::new().unwrap();
+        write_file(
+            &project.path().join(".claude/agents/code-reviewer.md"),
+            "---\nname: code-reviewer\n---\nbody",
+        );
+        write_file(
+            &project.path().join(".claude/skills/refactor/SKILL.md"),
+            "---\nname: refactor\n---\nbody",
+        );
+        // commands dir has only hidden entries — should not register
+        write_file(&project.path().join(".claude/commands/.gitkeep"), "");
+
+        let plugin = synthesize_local_claude_plugin(project.path()).unwrap();
+        assert_eq!(plugin.name, LOCAL_CLAUDE_PLUGIN_NAME);
+        assert!(plugin.capabilities.contains(&"agents".to_string()));
+        assert!(plugin.capabilities.contains(&"skills".to_string()));
+        assert!(!plugin.capabilities.contains(&"commands".to_string()));
+        assert!(
+            plugin.targets.is_empty(),
+            "synthetic plugin should accept all targets"
+        );
+        assert_eq!(
+            plugin.location,
+            project.path().join(".claude").to_string_lossy()
+        );
+    }
+
+    #[test]
+    fn synthesize_excludes_capability_when_directory_missing() {
+        let project = TempDir::new().unwrap();
+        write_file(
+            &project.path().join(".claude/agents/only-agent.md"),
+            "---\nname: only-agent\n---\nbody",
+        );
+        let plugin = synthesize_local_claude_plugin(project.path()).unwrap();
+        assert_eq!(plugin.capabilities, vec!["agents".to_string()]);
     }
 }

@@ -4,6 +4,7 @@
 //! responsibility — by the time `Syncer::sync` runs, every marketplace
 //! `path` referenced by `Config` must already be populated on disk.
 
+use crate::claude_config::synthesize_local_claude_plugin;
 use crate::config::{Config, TargetConfig};
 use crate::error::{Error, Result};
 use crate::marketplace::{EnsureBehavior, EnsureOutcome, Marketplace};
@@ -130,7 +131,12 @@ impl Syncer {
             }
         }
 
-        let resolved = PluginResolver::resolve_all(config, project_root)?;
+        let mut resolved = PluginResolver::resolve_all(config, project_root)?;
+        if config.use_claude_config {
+            if let Some(plugin) = synthesize_local_claude_plugin(project_root) {
+                resolved.push(plugin);
+            }
+        }
         let (actions, warnings) = enumerate_actions(config, project_root, &resolved)?;
         report.warnings.extend(warnings);
 
@@ -188,7 +194,12 @@ impl Syncer {
     /// expected to have run `sync` (or set them up manually) first.
     pub fn plan<P: AsRef<Path>>(config: &Config, project_root: P) -> Result<SyncPlan> {
         let project_root = project_root.as_ref();
-        let resolved = PluginResolver::resolve_all(config, project_root)?;
+        let mut resolved = PluginResolver::resolve_all(config, project_root)?;
+        if config.use_claude_config {
+            if let Some(plugin) = synthesize_local_claude_plugin(project_root) {
+                resolved.push(plugin);
+            }
+        }
         let (actions, warnings) = enumerate_actions(config, project_root, &resolved)?;
         Ok(SyncPlan { actions, warnings })
     }
@@ -621,5 +632,106 @@ mod tests {
         assert_eq!(report.installs.len(), 1);
         assert!(report.all_succeeded());
         assert!(!project.path().join(".claude/skills/.gitkeep").exists());
+    }
+
+    /// When `use_claude_config: true`, inline-authored agents/skills/commands
+    /// under `<project>/.claude/` are propagated to non-claude-code targets
+    /// (e.g. cursor), even when no marketplace plugin is configured.
+    #[test]
+    fn sync_propagates_local_claude_assets_when_flag_enabled() {
+        let marketplace = TempDir::new().unwrap();
+        let project = TempDir::new().unwrap();
+
+        // No marketplace plugins. The marketplace dir just needs the index so
+        // `Marketplace::ensure` is a no-op in offline mode.
+        fs::create_dir_all(marketplace.path().join(".claude-plugin")).unwrap();
+        fs::write(
+            marketplace.path().join(".claude-plugin/marketplace.json"),
+            r#"{"name":"empty","owner":{"name":"t"},"plugins":[]}"#,
+        )
+        .unwrap();
+
+        // Inline agent and skill authored directly in the project's .claude/.
+        fs::create_dir_all(project.path().join(".claude/agents")).unwrap();
+        fs::write(
+            project.path().join(".claude/agents/local-reviewer.md"),
+            "---\nname: local-reviewer\n---\nbody\n",
+        )
+        .unwrap();
+        fs::create_dir_all(project.path().join(".claude/skills/local-skill")).unwrap();
+        fs::write(
+            project.path().join(".claude/skills/local-skill/SKILL.md"),
+            "---\nname: local-skill\ndescription: t\n---\n",
+        )
+        .unwrap();
+
+        let mut config = base_config(marketplace.path().to_path_buf());
+        config.use_claude_config = true;
+        // Replace the default `claude-code` target (which use_claude_config
+        // would drop at load time) with `cursor`, simulating the user's
+        // post-load state.
+        config.targets.clear();
+        config
+            .targets
+            .insert("cursor".to_string(), TargetDefaults::cursor());
+
+        let report = Syncer::sync(
+            &config,
+            project.path(),
+            SyncOptions {
+                fetch: FetchPolicy::Skip,
+            },
+        )
+        .unwrap();
+        assert!(report.all_succeeded(), "sync failed: {report:?}");
+        assert_eq!(
+            report.installs.len(),
+            2,
+            "expected agent + skill to link into cursor"
+        );
+
+        let agent_link = project.path().join(".cursor/agents/local-reviewer.md");
+        let skill_link = project.path().join(".cursor/skills/local-skill");
+        assert!(agent_link.is_symlink(), "missing {}", agent_link.display());
+        assert!(skill_link.is_symlink(), "missing {}", skill_link.display());
+        assert_eq!(
+            fs::read_link(&agent_link).unwrap(),
+            project.path().join(".claude/agents/local-reviewer.md")
+        );
+    }
+
+    #[test]
+    fn sync_ignores_local_claude_when_flag_disabled() {
+        let marketplace = TempDir::new().unwrap();
+        let project = TempDir::new().unwrap();
+        fs::create_dir_all(marketplace.path().join(".claude-plugin")).unwrap();
+        fs::write(
+            marketplace.path().join(".claude-plugin/marketplace.json"),
+            r#"{"name":"empty","owner":{"name":"t"},"plugins":[]}"#,
+        )
+        .unwrap();
+        fs::create_dir_all(project.path().join(".claude/agents")).unwrap();
+        fs::write(project.path().join(".claude/agents/ignored.md"), "body").unwrap();
+
+        let mut config = base_config(marketplace.path().to_path_buf());
+        // use_claude_config is false; targets keep their default `claude-code`.
+        config.targets.clear();
+        config
+            .targets
+            .insert("cursor".to_string(), TargetDefaults::cursor());
+
+        let report = Syncer::sync(
+            &config,
+            project.path(),
+            SyncOptions {
+                fetch: FetchPolicy::Skip,
+            },
+        )
+        .unwrap();
+        assert_eq!(report.installs.len(), 0);
+        assert!(
+            !project.path().join(".cursor/agents/ignored.md").exists(),
+            "should not propagate inline .claude/ assets when use_claude_config is false"
+        );
     }
 }

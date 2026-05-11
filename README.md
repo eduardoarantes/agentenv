@@ -262,6 +262,15 @@ targets:
 
 Inspect what got imported with [`agentenv claude-config show`](#agentenv-claude-config-show).
 
+**Local assets too.** When `use_claude_config: true`, agentenv also treats
+your project's `<project>/.claude/{agents,skills,commands}/` directories as a
+synthetic plugin and propagates each leaf to your other targets. A file at
+`.claude/agents/code-reviewer.md` ends up at `.cursor/agents/code-reviewer.md`
+(and any other target whose defaults declare an `agents` mapping). Targets
+without a mapping for a given capability simply skip it — cursor doesn't
+have a documented project-level commands path, so `.claude/commands/` files
+don't go anywhere on cursor.
+
 Hooks are read and surfaced through `claude-config show` but are **not**
 written back to disk in this release — Claude Code already resolves global +
 project hooks at runtime.
