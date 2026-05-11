@@ -236,6 +236,7 @@ clean:
 | `sync.refetch` | No | Whether to fetch marketplace updates before syncing. |
 | `sync.mode` | No | Link strategy. Initially `symlink`. |
 | `clean.pruneEmptyDirs` | No | After `agentenv clean` removes managed links, prune any now-empty directories inside the project root. Stops at the project root and never touches dirs that still hold user files. Defaults to `true`. |
+| `instruction_files` | No | Map of root-level source files (`CLAUDE.md`, `AGENTS.md`, `CURSOR.md`, …) to lists of project-relative destination paths. agentenv symlinks each source into each destination. **Never overrides** existing user files; agentenv-managed symlinks are updated when the source changes. See [Propagating instruction files](#propagating-instruction-files) below. |
 
 ¹ `marketplaces` may be omitted when `use_claude_config: true` provides at
 least one marketplace via Claude's `extraKnownMarketplaces`.
@@ -274,6 +275,40 @@ don't go anywhere on cursor.
 Hooks are read and surfaced through `claude-config show` but are **not**
 written back to disk in this release — Claude Code already resolves global +
 project hooks at runtime.
+
+### Propagating instruction files
+
+Different AI tools expect their cross-tool instruction sheet in different
+places — Claude Code reads `CLAUDE.md`, Codex/Cursor/Copilot read
+`AGENTS.md`, Junie reads `.junie/AGENTS.md`, Antigravity reads `agents.md`,
+and so on. Rather than duplicate the same content N times, point at a single
+source file and let agentenv mirror it everywhere.
+
+```yaml
+instruction_files:
+  CLAUDE.md:                # source file at project root
+    - AGENTS.md             # destinations (project-relative)
+    - .junie/AGENTS.md
+    - agents.md
+  CURSOR.md:
+    - .cursor/rules/main.md
+```
+
+After `agentenv sync`, each destination is a symlink pointing at the source
+file. The destinations are tracked in `.agentenv/state.json` so
+`agentenv clean` reverts them.
+
+**Safety: agentenv never overrides existing files.** If a destination
+already contains user content (a regular file, a directory, or a symlink
+agentenv doesn't own), it's left untouched and a warning is logged.
+Agentenv-managed symlinks pointing at the wrong source are updated when the
+config changes — those are owned by agentenv, so updating them isn't an
+override of user content.
+
+If a configured source file doesn't exist at the project root, its
+destinations are skipped with a warning. Removing an entry from
+`instruction_files` and re-syncing cleans up the previously-managed
+destinations.
 
 ---
 
@@ -501,6 +536,7 @@ Shipped:
 - [x] VS Code extension
 - [x] Dry-run mode (`agentenv explain`)
 - [x] Import config from Claude Code (`use_claude_config: true`)
+- [x] Propagate instruction files (`CLAUDE.md` → `AGENTS.md`, `.junie/AGENTS.md`, …) via `instruction_files`
 
 Planned:
 
