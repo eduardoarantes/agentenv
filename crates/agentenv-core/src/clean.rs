@@ -81,6 +81,13 @@ impl Cleaner {
         }
 
         State::remove(project_root)?;
+
+        // Always strip the managed `.gitignore` block — cleanup is by
+        // definition agentenv tearing down its footprint, regardless of
+        // whether `gitignore_managed_links` is still set in `.agentrc.yaml`.
+        // No-ops cleanly when the file or block isn't present.
+        crate::gitignore::remove_managed_block(project_root)?;
+
         Ok(report)
     }
 }
@@ -325,6 +332,33 @@ mod tests {
         assert!(!project.path().join(".claude/agents").exists());
         assert!(!project.path().join(".claude").exists());
         assert!(report.pruned_dirs.contains(&project.path().join(".claude")));
+    }
+
+    #[test]
+    fn clean_removes_gitignore_managed_block() {
+        let project = TempDir::new().unwrap();
+        // Seed a .gitignore that already contains a managed block plus user
+        // content. Clean should strip the block but leave user lines intact.
+        let initial = format!(
+            "node_modules/\n\n{begin}\n/.cursor/agents/foo.md\n{end}\n",
+            begin = crate::gitignore::BEGIN_MARKER,
+            end = crate::gitignore::END_MARKER
+        );
+        fs::write(project.path().join(".gitignore"), &initial).unwrap();
+        // State file must exist for Cleaner to proceed; can be empty.
+        State::default().save(project.path()).unwrap();
+
+        Cleaner::clean(project.path(), CleanOptions::default()).unwrap();
+
+        let gitignore = fs::read_to_string(project.path().join(".gitignore")).unwrap();
+        assert!(
+            !gitignore.contains(crate::gitignore::BEGIN_MARKER),
+            "managed block must be stripped"
+        );
+        assert!(
+            gitignore.contains("node_modules/"),
+            "user content must survive"
+        );
     }
 
     #[test]

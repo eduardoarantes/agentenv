@@ -114,6 +114,11 @@
         }
       }
     },
+    "gitignore_managed_links": {
+      "type": "boolean",
+      "default": false,
+      "description": "Maintain a managed block in <project>/.gitignore listing every symlink/copy agentenv currently owns. User-authored .gitignore lines outside the sentinel-delimited block are preserved. `agentenv clean` removes the block entirely."
+    },
     "instruction_files": {
       "type": "object",
       "description": "Cross-tool instruction-file propagation. Each key is a source file at the project root (e.g. CLAUDE.md, AGENTS.md, CURSOR.md). Each value is a list of project-relative destination paths to symlink it from. Never overrides existing user files; agentenv-managed symlinks are updated to point at the current source.",

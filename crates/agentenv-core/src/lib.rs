@@ -10,6 +10,7 @@ pub mod claude_config;
 pub mod clean;
 pub mod config;
 pub mod error;
+pub mod gitignore;
 pub mod init;
 pub mod loader;
 pub mod marketplace;

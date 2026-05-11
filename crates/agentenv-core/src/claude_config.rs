@@ -673,6 +673,7 @@ mod tests {
             sync: SyncConfig::default(),
             clean: CleanConfig::default(),
             use_claude_config: true,
+            gitignore_managed_links: false,
             instruction_files: HashMap::new(),
             claude_hooks: None,
         };

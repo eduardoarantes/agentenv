@@ -38,6 +38,14 @@ pub struct Config {
     #[serde(default)]
     pub clean: CleanConfig,
 
+    /// When `true`, agentenv maintains a managed block in
+    /// `<project>/.gitignore` listing every symlink/copy it currently owns
+    /// (per `.agentenv/state.json`). The block is delimited by sentinel
+    /// comments, so user-authored `.gitignore` lines outside it are
+    /// preserved verbatim. `agentenv clean` removes the block entirely.
+    #[serde(default)]
+    pub gitignore_managed_links: bool,
+
     /// Cross-tool instruction-file propagation. Each key is a source file
     /// at the project root (e.g. `CLAUDE.md`, `AGENTS.md`, `CURSOR.md`);
     /// each value is a list of project-relative destination paths to
@@ -478,6 +486,7 @@ mod tests {
             sync: SyncConfig::default(),
             clean: CleanConfig::default(),
             use_claude_config: false,
+            gitignore_managed_links: false,
             instruction_files: HashMap::new(),
             claude_hooks: None,
         };
@@ -506,6 +515,7 @@ mod tests {
             sync: SyncConfig::default(),
             clean: CleanConfig::default(),
             use_claude_config: false,
+            gitignore_managed_links: false,
             instruction_files: HashMap::new(),
             claude_hooks: None,
         };
@@ -547,6 +557,7 @@ mod tests {
             sync: SyncConfig::default(),
             clean: CleanConfig::default(),
             use_claude_config: false,
+            gitignore_managed_links: false,
             instruction_files: HashMap::new(),
             claude_hooks: None,
         };
@@ -592,6 +603,7 @@ mod tests {
             sync: SyncConfig::default(),
             clean: CleanConfig::default(),
             use_claude_config: false,
+            gitignore_managed_links: false,
             instruction_files: HashMap::new(),
             claude_hooks: None,
         };
@@ -637,6 +649,7 @@ mod tests {
             sync: SyncConfig::default(),
             clean: CleanConfig::default(),
             use_claude_config: false,
+            gitignore_managed_links: false,
             instruction_files: HashMap::new(),
             claude_hooks: None,
         };
@@ -686,6 +699,7 @@ mod tests {
             sync: SyncConfig::default(),
             clean: CleanConfig::default(),
             use_claude_config: false,
+            gitignore_managed_links: false,
             instruction_files: HashMap::new(),
             claude_hooks: None,
         };
@@ -725,6 +739,7 @@ mod tests {
             sync: SyncConfig::default(),
             clean: CleanConfig::default(),
             use_claude_config: false,
+            gitignore_managed_links: false,
             instruction_files: HashMap::new(),
             claude_hooks: None,
         };
@@ -754,6 +769,7 @@ mod tests {
             sync: SyncConfig::default(),
             clean: CleanConfig::default(),
             use_claude_config: false,
+            gitignore_managed_links: false,
             instruction_files: HashMap::new(),
             claude_hooks: None,
         };
@@ -780,6 +796,7 @@ mod tests {
             sync: SyncConfig::default(),
             clean: CleanConfig::default(),
             use_claude_config: false,
+            gitignore_managed_links: false,
             instruction_files: HashMap::new(),
             claude_hooks: None,
         };
@@ -821,6 +838,7 @@ mod tests {
             sync: SyncConfig::default(),
             clean: CleanConfig::default(),
             use_claude_config: false,
+            gitignore_managed_links: false,
             instruction_files: HashMap::new(),
             claude_hooks: None,
         };
@@ -856,6 +874,7 @@ mod tests {
             sync: SyncConfig::default(),
             clean: CleanConfig::default(),
             use_claude_config: false,
+            gitignore_managed_links: false,
             instruction_files: HashMap::new(),
             claude_hooks: None,
         };
@@ -878,6 +897,7 @@ mod tests {
             clean: CleanConfig::default(),
             instruction_files: HashMap::new(),
             use_claude_config: true,
+            gitignore_managed_links: false,
             claude_hooks: None,
         }
     }
