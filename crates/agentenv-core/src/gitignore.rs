@@ -75,6 +75,9 @@ fn read_existing(path: &Path) -> Result<Option<String>> {
 
 /// Project-relative path of each link, sorted and deduplicated. Hidden
 /// dotfiles inside the path are preserved (they're often `.claude/...`).
+/// Path separators are always `/`, even on Windows — git's `.gitignore`
+/// format is platform-agnostic, and a Windows `\`-separated entry would
+/// silently fail to match.
 fn collect_entries(project_root: &Path, links: &[StateLink]) -> Vec<String> {
     let mut set: BTreeSet<String> = BTreeSet::new();
     for link in links {
@@ -83,8 +86,12 @@ fn collect_entries(project_root: &Path, links: &[StateLink]) -> Vec<String> {
             // project. Skip defensively if it does.
             continue;
         };
+        let joined: Vec<String> = rel
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect();
         let mut entry = String::from("/");
-        entry.push_str(&rel.to_string_lossy());
+        entry.push_str(&joined.join("/"));
         set.insert(entry);
     }
     set.into_iter().collect()
