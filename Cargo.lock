@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "agentenv"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "agentenv-core",
  "anyhow",
@@ -24,7 +24,7 @@ dependencies = [
 
 [[package]]
 name = "agentenv-core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "chrono",
