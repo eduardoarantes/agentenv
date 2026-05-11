@@ -6,8 +6,8 @@
 use agentenv_core::init::CONFIG_FILENAME;
 use agentenv_core::sync::{FetchPolicy, SyncOptions};
 use agentenv_core::{
-    CleanOptions, CleanReport, Cleaner, Config, ConfigLoader, Initializer, PluginResolver, State,
-    SyncPlan, SyncReport, Syncer,
+    ClaudeConfigLoader, CleanOptions, CleanReport, Cleaner, Config, ConfigLoader, Initializer,
+    PluginResolver, State, SyncPlan, SyncReport, Syncer,
 };
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -59,6 +59,23 @@ enum Command {
 
     /// Remove agentenv-managed links recorded in .agentenv/state.json
     Clean {},
+
+    /// Inspect Claude `settings.json` import (requires `use_claude_config: true`)
+    #[command(name = "claude-config")]
+    ClaudeConfig {
+        #[command(subcommand)]
+        command: ClaudeConfigCommand,
+    },
+}
+
+#[derive(Parser, Debug)]
+enum ClaudeConfigCommand {
+    /// Show marketplaces, plugins, and hooks imported from Claude settings.json
+    Show {
+        /// Emit JSON instead of the human-readable table
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[tokio::main]
@@ -87,6 +104,9 @@ async fn main() -> Result<()> {
         Command::Doctor {} => run_doctor(&project_root),
         Command::Explain {} => run_explain(&project_root),
         Command::Clean {} => run_clean(&project_root),
+        Command::ClaudeConfig { command } => match command {
+            ClaudeConfigCommand::Show { json } => run_claude_config_show(&project_root, json),
+        },
     }
 }
 
@@ -252,6 +272,51 @@ fn run_doctor(project_root: &Path) -> Result<()> {
     }
 
     finish_doctor(issues)
+}
+
+fn run_claude_config_show(project_root: &Path, as_json: bool) -> Result<()> {
+    let import = ClaudeConfigLoader::load(project_root)
+        .context("failed to load Claude settings.json files")?;
+
+    if as_json {
+        let out = serde_json::to_string_pretty(&import)
+            .context("failed to serialize Claude import as JSON")?;
+        println!("{out}");
+        return Ok(());
+    }
+
+    println!("{}", "Marketplaces (from Claude):".bold());
+    if import.marketplaces.is_empty() {
+        println!("  (none)");
+    }
+    let mut mp_keys: Vec<&String> = import.marketplaces.keys().collect();
+    mp_keys.sort();
+    for name in mp_keys {
+        let mp = &import.marketplaces[name];
+        println!("  {} → {} (ref: {})", name, mp.remote, mp.r#ref);
+    }
+
+    println!("\n{}", "Plugins (from Claude):".bold());
+    if import.plugins.is_empty() {
+        println!("  (none)");
+    }
+    for plugin in &import.plugins {
+        let namespace = plugin.namespace.as_deref().unwrap_or("default");
+        println!("  {} (namespace: {})", plugin.name, namespace);
+    }
+
+    println!("\n{}", "Hooks (from Claude):".bold());
+    match &import.hooks {
+        serde_json::Value::Null => println!("  (none)"),
+        other => {
+            let pretty = serde_json::to_string_pretty(other).unwrap_or_else(|_| other.to_string());
+            for line in pretty.lines() {
+                println!("  {line}");
+            }
+        },
+    }
+
+    Ok(())
 }
 
 fn run_clean(project_root: &Path) -> Result<()> {

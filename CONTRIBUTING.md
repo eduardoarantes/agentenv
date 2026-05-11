@@ -39,6 +39,7 @@ Reusable logic, organised by responsibility:
 
 - `config` — `.agentrc.yaml` schema and path resolution
 - `loader` — YAML parsing and validation
+- `claude_config` — reads `~/.claude/settings.json` and the project's `.claude/settings.json`, translates `extraKnownMarketplaces` / `enabledPlugins` / `hooks` into the agentenv config model (used when `use_claude_config: true`)
 - `marketplace` — Git-backed plugin source, including the Claude Code `marketplace.json` index format
 - `resolver` — locating plugins inside a marketplace and inferring their capabilities
 - `targets` — built-in defaults (`claude-code`, `cursor`, `codex`, …) and the `TargetConfig` model that drives where files land
@@ -50,7 +51,7 @@ Reusable logic, organised by responsibility:
 
 ### `agentenv-cli`
 
-Thin CLI entrypoint over `agentenv-core`. Subcommands: `init`, `sync`, `list`, `doctor`, `explain`, `clean`.
+Thin CLI entrypoint over `agentenv-core`. Subcommands: `init`, `sync`, `list`, `doctor`, `explain`, `clean`, `claude-config show`.
 
 ### `vscode`
 

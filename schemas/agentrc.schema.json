@@ -3,7 +3,7 @@
   "title": "agentenv Configuration",
   "description": "Configuration schema for agentenv (.agentrc.yaml)",
   "type": "object",
-  "required": ["version", "marketplaces", "targets"],
+  "required": ["version"],
   "additionalProperties": false,
   "properties": {
     "version": {
@@ -11,10 +11,14 @@
       "minimum": 1,
       "description": "Configuration version"
     },
+    "use_claude_config": {
+      "type": "boolean",
+      "default": false,
+      "description": "Import marketplaces, plugins, and hooks from Claude Code's settings.json files (project ./.claude/settings.json and global ~/.claude/settings.json). When true, the `claude-code` target is dropped from sync because Claude Code is treated as the source of truth, not a destination."
+    },
     "marketplaces": {
       "type": "object",
-      "description": "Marketplaces by namespace",
-      "minProperties": 1,
+      "description": "Marketplaces by namespace. Required unless use_claude_config is true and Claude's settings.json provides extraKnownMarketplaces.",
       "additionalProperties": {
         "type": "object",
         "required": ["path", "remote"],
