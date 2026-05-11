@@ -10,7 +10,16 @@ pub struct Config {
     /// Configuration version
     pub version: u32,
 
+    /// Import marketplaces, plugins, and hooks from Claude Code's
+    /// `settings.json` files (project `<root>/.claude/settings.json` and
+    /// global `~/.claude/settings.json`). When `true`, the `claude-code`
+    /// target is dropped from sync because Claude Code is treated as the
+    /// source of truth, not a destination.
+    #[serde(default)]
+    pub use_claude_config: bool,
+
     /// Marketplaces by namespace
+    #[serde(default)]
     pub marketplaces: HashMap<String, MarketplaceConfig>,
 
     /// Plugins to import (optionally namespaced)
@@ -18,6 +27,7 @@ pub struct Config {
     pub plugins: Vec<PluginRef>,
 
     /// Target configurations (key = target name, value = target config)
+    #[serde(default)]
     pub targets: HashMap<String, TargetConfig>,
 
     /// Sync configuration
@@ -27,6 +37,13 @@ pub struct Config {
     /// Clean configuration
     #[serde(default)]
     pub clean: CleanConfig,
+
+    /// Runtime-only: hooks imported from Claude `settings.json`. Not
+    /// serialized to or from disk; populated by `ClaudeConfigLoader` when
+    /// `use_claude_config: true`. Exposed for the `claude-config show`
+    /// command and reserved for future hook materialization.
+    #[serde(skip)]
+    pub claude_hooks: Option<serde_json::Value>,
 }
 
 /// Marketplace configuration
@@ -202,12 +219,18 @@ impl Config {
         }
 
         if self.marketplaces.is_empty() {
-            return Err(crate::error::Error::Config(
-                "at least one marketplace must be defined".to_string(),
-            ));
+            let msg = if self.use_claude_config {
+                "no marketplaces configured: `.agentrc.yaml` is empty and Claude's settings.json provided no `extraKnownMarketplaces`"
+            } else {
+                "at least one marketplace must be defined"
+            };
+            return Err(crate::error::Error::Config(msg.to_string()));
         }
 
-        if self.targets.is_empty() {
+        // When `use_claude_config: true`, the `claude-code` target is dropped
+        // during merge. It's valid to end up with zero targets — `sync` is
+        // then a no-op while `claude-config show` still works.
+        if self.targets.is_empty() && !self.use_claude_config {
             return Err(crate::error::Error::Config(
                 "at least one target must be defined".to_string(),
             ));
@@ -289,6 +312,57 @@ impl Config {
     /// Get target configuration by name
     pub fn get_target(&self, name: &str) -> Option<&TargetConfig> {
         self.targets.get(name)
+    }
+
+    /// Layer a `ClaudeConfigImport` onto this config.
+    ///
+    /// - Marketplaces from Claude fill in any namespace the user did not
+    ///   define in `.agentrc.yaml`; user entries win on conflict.
+    /// - Plugins from Claude are appended unless `(name, namespace)` already
+    ///   appears in `self.plugins`.
+    /// - The `claude-code` target is removed because Claude Code is treated
+    ///   as the source of truth, not a sync destination, when
+    ///   `use_claude_config: true`.
+    /// - `hooks` are stashed on `claude_hooks` for surfacing via the CLI.
+    ///   No file is mutated by this call.
+    pub fn merge_claude_import(&mut self, import: crate::claude_config::ClaudeConfigImport) {
+        for (name, mp) in import.marketplaces {
+            self.marketplaces.entry(name).or_insert(mp);
+        }
+
+        let mut existing: std::collections::HashSet<(String, String)> = self
+            .plugins
+            .iter()
+            .map(|p| {
+                (
+                    p.name.clone(),
+                    p.namespace.clone().unwrap_or_else(|| "default".to_string()),
+                )
+            })
+            .collect();
+        for plugin in import.plugins {
+            let key = (
+                plugin.name.clone(),
+                plugin
+                    .namespace
+                    .clone()
+                    .unwrap_or_else(|| "default".to_string()),
+            );
+            if existing.insert(key) {
+                self.plugins.push(plugin);
+            }
+        }
+
+        if self.targets.remove("claude-code").is_some() {
+            tracing::info!(
+                "claude-code target dropped because use_claude_config: true treats Claude as the source"
+            );
+        }
+
+        self.claude_hooks = match import.hooks {
+            serde_json::Value::Null => None,
+            other => Some(other),
+        };
     }
 }
 
@@ -388,6 +462,8 @@ mod tests {
             targets: HashMap::new(),
             sync: SyncConfig::default(),
             clean: CleanConfig::default(),
+            use_claude_config: false,
+            claude_hooks: None,
         };
 
         assert!(config.validate().is_err());
@@ -413,6 +489,8 @@ mod tests {
             targets,
             sync: SyncConfig::default(),
             clean: CleanConfig::default(),
+            use_claude_config: false,
+            claude_hooks: None,
         };
 
         assert!(config.validate().is_err());
@@ -451,6 +529,8 @@ mod tests {
             targets,
             sync: SyncConfig::default(),
             clean: CleanConfig::default(),
+            use_claude_config: false,
+            claude_hooks: None,
         };
 
         assert!(config.validate().is_ok());
@@ -493,6 +573,8 @@ mod tests {
             targets,
             sync: SyncConfig::default(),
             clean: CleanConfig::default(),
+            use_claude_config: false,
+            claude_hooks: None,
         };
 
         assert!(config.validate().is_err());
@@ -535,6 +617,8 @@ mod tests {
             targets,
             sync: SyncConfig::default(),
             clean: CleanConfig::default(),
+            use_claude_config: false,
+            claude_hooks: None,
         };
 
         assert!(config.validate().is_ok());
@@ -581,6 +665,8 @@ mod tests {
             targets,
             sync: SyncConfig::default(),
             clean: CleanConfig::default(),
+            use_claude_config: false,
+            claude_hooks: None,
         };
 
         assert!(config.get_marketplace("default").is_some());
@@ -617,6 +703,8 @@ mod tests {
             targets,
             sync: SyncConfig::default(),
             clean: CleanConfig::default(),
+            use_claude_config: false,
+            claude_hooks: None,
         };
 
         let names = config.target_names();
@@ -643,6 +731,8 @@ mod tests {
             targets,
             sync: SyncConfig::default(),
             clean: CleanConfig::default(),
+            use_claude_config: false,
+            claude_hooks: None,
         };
 
         assert!(config.validate().is_ok());
@@ -666,6 +756,8 @@ mod tests {
             targets,
             sync: SyncConfig::default(),
             clean: CleanConfig::default(),
+            use_claude_config: false,
+            claude_hooks: None,
         };
 
         let merged = config.apply_defaults();
@@ -704,6 +796,8 @@ mod tests {
             targets,
             sync: SyncConfig::default(),
             clean: CleanConfig::default(),
+            use_claude_config: false,
+            claude_hooks: None,
         };
 
         let merged = config.apply_defaults();
@@ -736,6 +830,8 @@ mod tests {
             targets,
             sync: SyncConfig::default(),
             clean: CleanConfig::default(),
+            use_claude_config: false,
+            claude_hooks: None,
         };
 
         let merged = config.apply_defaults();
@@ -744,5 +840,165 @@ mod tests {
         // Unknown targets should keep their user config as-is
         assert_eq!(unknown.r#type, "unknown-type");
         assert!(unknown.source_mappings.is_empty());
+    }
+
+    fn empty_config() -> Config {
+        Config {
+            version: 1,
+            marketplaces: HashMap::new(),
+            plugins: vec![],
+            targets: HashMap::new(),
+            sync: SyncConfig::default(),
+            clean: CleanConfig::default(),
+            use_claude_config: true,
+            claude_hooks: None,
+        }
+    }
+
+    #[test]
+    fn merge_claude_import_fills_empty_marketplaces() {
+        let mut config = empty_config();
+        let mut marketplaces = HashMap::new();
+        marketplaces.insert(
+            "claude-mp".to_string(),
+            MarketplaceConfig {
+                path: PathBuf::from("~/.agentenv/marketplaces/claude-mp"),
+                remote: "https://example.com/claude.git".to_string(),
+                r#ref: "main".to_string(),
+            },
+        );
+        let import = crate::claude_config::ClaudeConfigImport {
+            marketplaces,
+            plugins: vec![],
+            hooks: serde_json::Value::Null,
+        };
+        config.merge_claude_import(import);
+        assert!(config.marketplaces.contains_key("claude-mp"));
+    }
+
+    #[test]
+    fn merge_claude_import_user_marketplace_wins() {
+        let mut config = empty_config();
+        config.marketplaces.insert(
+            "shared".to_string(),
+            MarketplaceConfig {
+                path: PathBuf::from("~/custom"),
+                remote: "https://user.example.com/m.git".to_string(),
+                r#ref: "main".to_string(),
+            },
+        );
+        let mut marketplaces = HashMap::new();
+        marketplaces.insert(
+            "shared".to_string(),
+            MarketplaceConfig {
+                path: PathBuf::from("~/.agentenv/marketplaces/shared"),
+                remote: "https://claude.example.com/m.git".to_string(),
+                r#ref: "main".to_string(),
+            },
+        );
+        let import = crate::claude_config::ClaudeConfigImport {
+            marketplaces,
+            plugins: vec![],
+            hooks: serde_json::Value::Null,
+        };
+        config.merge_claude_import(import);
+        let shared = config.marketplaces.get("shared").unwrap();
+        assert_eq!(shared.remote, "https://user.example.com/m.git");
+    }
+
+    #[test]
+    fn merge_claude_import_dedupes_plugins() {
+        let mut config = empty_config();
+        config.plugins.push(PluginRef {
+            name: "shared".to_string(),
+            namespace: Some("m".to_string()),
+            version: None,
+        });
+        let import = crate::claude_config::ClaudeConfigImport {
+            marketplaces: HashMap::new(),
+            plugins: vec![
+                PluginRef {
+                    name: "shared".to_string(),
+                    namespace: Some("m".to_string()),
+                    version: None,
+                },
+                PluginRef {
+                    name: "new".to_string(),
+                    namespace: Some("m".to_string()),
+                    version: None,
+                },
+            ],
+            hooks: serde_json::Value::Null,
+        };
+        config.merge_claude_import(import);
+        assert_eq!(config.plugins.len(), 2);
+        assert!(config.plugins.iter().any(|p| p.name == "new"));
+    }
+
+    #[test]
+    fn merge_claude_import_drops_claude_code_target() {
+        let mut config = empty_config();
+        config.targets.insert(
+            "claude-code".to_string(),
+            TargetConfig {
+                r#type: String::new(),
+                tools: vec![],
+                paths: HashMap::new(),
+                source_mappings: HashMap::new(),
+            },
+        );
+        config.targets.insert(
+            "cursor".to_string(),
+            TargetConfig {
+                r#type: String::new(),
+                tools: vec![],
+                paths: HashMap::new(),
+                source_mappings: HashMap::new(),
+            },
+        );
+        let import = crate::claude_config::ClaudeConfigImport {
+            marketplaces: HashMap::new(),
+            plugins: vec![],
+            hooks: serde_json::Value::Null,
+        };
+        config.merge_claude_import(import);
+        assert!(!config.targets.contains_key("claude-code"));
+        assert!(config.targets.contains_key("cursor"));
+    }
+
+    #[test]
+    fn merge_claude_import_stashes_hooks() {
+        let mut config = empty_config();
+        let hooks = serde_json::json!({ "Stop": [{ "matcher": ".*" }] });
+        let import = crate::claude_config::ClaudeConfigImport {
+            marketplaces: HashMap::new(),
+            plugins: vec![],
+            hooks: hooks.clone(),
+        };
+        config.merge_claude_import(import);
+        assert_eq!(config.claude_hooks, Some(hooks));
+    }
+
+    #[test]
+    fn validate_allows_empty_targets_when_use_claude_config_true() {
+        let mut config = empty_config();
+        config.marketplaces.insert(
+            "m".to_string(),
+            MarketplaceConfig {
+                path: PathBuf::from("~/m"),
+                remote: "https://example.com/m.git".to_string(),
+                r#ref: "main".to_string(),
+            },
+        );
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_still_requires_some_marketplace_after_claude_merge() {
+        let mut config = empty_config();
+        let import = crate::claude_config::ClaudeConfigImport::default();
+        config.merge_claude_import(import);
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("no marketplaces configured"));
     }
 }

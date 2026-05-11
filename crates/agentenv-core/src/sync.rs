@@ -437,6 +437,8 @@ mod tests {
             targets,
             sync: SyncConfig::default(),
             clean: CleanConfig::default(),
+            use_claude_config: false,
+            claude_hooks: None,
         }
     }
 

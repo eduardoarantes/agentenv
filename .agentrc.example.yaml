@@ -1,5 +1,22 @@
 version: 1
 
+# Import marketplaces, plugins, and hooks from Claude Code's settings.json.
+# When true, agentenv reads `extraKnownMarketplaces` and `enabledPlugins` from
+# both the project's `./.claude/settings.json` and the user's global
+# `~/.claude/settings.json` (project wins on key conflicts) and merges them
+# into the lists below. Anything declared in `marketplaces:` or `plugins:`
+# here wins over what Claude provides.
+#
+# When this is true, the built-in `claude-code` target is dropped from sync
+# because Claude Code is treated as the source of truth — re-syncing into
+# `.claude/skills`, `.claude/commands`, `.claude/agents` would either be a
+# no-op or conflict with files Claude already manages. Use other targets
+# (cursor, codex, copilot, gemini-cli, ...) to propagate Claude's plugins
+# to other tools.
+#
+# Inspect what gets imported with: `agentenv claude-config show`
+use_claude_config: false
+
 # Marketplaces can be configured with namespaces
 # This allows for multiple marketplace sources
 marketplaces:

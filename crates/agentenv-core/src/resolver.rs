@@ -178,6 +178,8 @@ mod tests {
             targets,
             sync: Default::default(),
             clean: Default::default(),
+            use_claude_config: false,
+            claude_hooks: None,
         }
     }
 

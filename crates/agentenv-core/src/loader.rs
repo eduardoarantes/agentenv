@@ -1,5 +1,6 @@
 //! Configuration loading and parsing
 
+use crate::claude_config::ClaudeConfigLoader;
 use crate::config::Config;
 use crate::error::Result;
 use std::fs;
@@ -22,13 +23,39 @@ impl ConfigLoader {
     /// - YAML is malformed
     /// - Configuration fails validation
     pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Config> {
+        Self::load_from_file_impl(path.as_ref(), None)
+    }
+
+    /// Test-only variant of [`Self::load_from_file`] that uses `home` instead
+    /// of `dirs::home_dir()` when reading the global Claude `settings.json`.
+    /// Keeps integration tests hermetic.
+    #[cfg(test)]
+    pub fn load_from_file_with_home<P: AsRef<Path>>(path: P, home: &Path) -> Result<Config> {
+        Self::load_from_file_impl(path.as_ref(), Some(home))
+    }
+
+    fn load_from_file_impl(path: &Path, home_override: Option<&Path>) -> Result<Config> {
         let content = fs::read_to_string(path)?;
-        let config: Config = serde_yaml::from_str(&content)?;
+        let mut config: Config = serde_yaml::from_str(&content)?;
+
+        if config.use_claude_config {
+            let project_root = path.parent().unwrap_or_else(|| Path::new("."));
+            let import = match home_override {
+                Some(home) => ClaudeConfigLoader::load_with_home(project_root, home)?,
+                None => ClaudeConfigLoader::load(project_root)?,
+            };
+            config.merge_claude_import(import);
+        }
+
         config.validate()?;
         Ok(config.apply_defaults())
     }
 
     /// Load configuration from a YAML string
+    ///
+    /// Note: This entry point does NOT load Claude `settings.json` even when
+    /// `use_claude_config: true` is set, because there is no project root to
+    /// resolve relative to. Use [`Self::load_from_file`] for the full flow.
     ///
     /// # Arguments
     ///
@@ -131,5 +158,85 @@ targets:
     fn test_load_from_file_not_found() {
         let result = ConfigLoader::load_from_file("/nonexistent/path/.agentrc.yaml");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_load_from_file_with_use_claude_config_merges_settings() {
+        use tempfile::TempDir;
+        let project = TempDir::new().unwrap();
+        let project_root = project.path();
+
+        // Project .claude/settings.json with marketplaces + plugins.
+        let claude_dir = project_root.join(".claude");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        std::fs::write(
+            claude_dir.join("settings.json"),
+            r#"{
+                "extraKnownMarketplaces": {
+                    "code-mp": {
+                        "source": { "source": "git", "url": "https://example.com/m.git" }
+                    }
+                },
+                "enabledPlugins": {
+                    "ts-agents@code-mp": true
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let yaml = r#"
+version: 1
+use_claude_config: true
+targets:
+  cursor: {}
+"#;
+        std::fs::write(project_root.join(".agentrc.yaml"), yaml).unwrap();
+
+        let home = TempDir::new().unwrap();
+        let config =
+            ConfigLoader::load_from_file_with_home(project_root.join(".agentrc.yaml"), home.path())
+                .unwrap();
+        assert!(config.marketplaces.contains_key("code-mp"));
+        assert!(config.plugins.iter().any(|p| p.name == "ts-agents"));
+        assert!(config.targets.contains_key("cursor"));
+    }
+
+    #[test]
+    fn test_load_from_file_drops_claude_code_target_when_use_claude_config() {
+        use tempfile::TempDir;
+        let project = TempDir::new().unwrap();
+        let project_root = project.path();
+        let claude_dir = project_root.join(".claude");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        std::fs::write(
+            claude_dir.join("settings.json"),
+            r#"{
+                "extraKnownMarketplaces": {
+                    "code-mp": {
+                        "source": { "source": "git", "url": "https://example.com/m.git" }
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let yaml = r#"
+version: 1
+use_claude_config: true
+targets:
+  claude-code: {}
+  cursor: {}
+"#;
+        std::fs::write(project_root.join(".agentrc.yaml"), yaml).unwrap();
+
+        let home = TempDir::new().unwrap();
+        let config =
+            ConfigLoader::load_from_file_with_home(project_root.join(".agentrc.yaml"), home.path())
+                .unwrap();
+        assert!(
+            !config.targets.contains_key("claude-code"),
+            "claude-code target should be dropped"
+        );
+        assert!(config.targets.contains_key("cursor"));
     }
 }
