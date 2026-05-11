@@ -190,6 +190,12 @@ agentenv doctor
 ```yaml
 version: 1
 
+# Import marketplaces, plugins, and hooks from Claude Code's settings.json.
+# When true, the `claude-code` target is dropped from sync (Claude is then
+# the source of truth, not a destination). See "Importing from Claude Code"
+# below.
+use_claude_config: false
+
 marketplaces:
   default:
     path: ~/.agentenv/marketplace
