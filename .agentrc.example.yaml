@@ -74,6 +74,11 @@ clean:
   # Stops at the project root and never touches dirs that still hold user files.
   pruneEmptyDirs: true
 
+# Maintain a sentinel-delimited block in <project>/.gitignore listing every
+# symlink/copy agentenv currently owns. User-authored .gitignore lines outside
+# the block are preserved. `agentenv clean` strips the block.
+# gitignore_managed_links: true
+
 # Mirror a single instruction file to the various paths different AI tools
 # expect. Each key is a file at the project root; each value is a list of
 # project-relative destinations to symlink it from. agentenv NEVER overrides

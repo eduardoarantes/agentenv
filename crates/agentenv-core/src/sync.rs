@@ -198,6 +198,17 @@ impl Syncer {
         }
 
         new_state.save(project_root)?;
+
+        if config.gitignore_managed_links {
+            if let Err(err) =
+                crate::gitignore::refresh_managed_block(project_root, &new_state.links)
+            {
+                report
+                    .warnings
+                    .push(format!("failed to refresh .gitignore managed block: {err}"));
+            }
+        }
+
         Ok(report)
     }
 
@@ -661,6 +672,7 @@ mod tests {
             sync: SyncConfig::default(),
             clean: CleanConfig::default(),
             use_claude_config: false,
+            gitignore_managed_links: false,
             instruction_files: HashMap::new(),
             claude_hooks: None,
         }
@@ -1185,5 +1197,96 @@ mod tests {
             fs::read_link(project.path().join("AGENTS.md")).unwrap(),
             project.path().join("CLAUDE2.md")
         );
+    }
+
+    #[test]
+    fn sync_writes_gitignore_block_when_flag_enabled() {
+        let marketplace = TempDir::new().unwrap();
+        let project = TempDir::new().unwrap();
+        write_plugin(
+            marketplace.path(),
+            "demo",
+            "1.0.0",
+            &["claude-code"],
+            &["agents"],
+        );
+
+        let mut config = base_config(marketplace.path().to_path_buf());
+        config.gitignore_managed_links = true;
+        config.plugins = vec![PluginRef {
+            name: "demo".to_string(),
+            namespace: None,
+            version: None,
+        }];
+
+        Syncer::sync(&config, project.path(), SyncOptions::default()).unwrap();
+
+        let gitignore = fs::read_to_string(project.path().join(".gitignore")).unwrap();
+        assert!(
+            gitignore.contains(crate::gitignore::BEGIN_MARKER),
+            "missing begin marker. got: {gitignore}"
+        );
+        assert!(gitignore.contains("/.claude/agents/agents-leaf.md"));
+        assert!(gitignore.contains(crate::gitignore::END_MARKER));
+    }
+
+    #[test]
+    fn sync_does_not_touch_gitignore_when_flag_disabled() {
+        let marketplace = TempDir::new().unwrap();
+        let project = TempDir::new().unwrap();
+        write_plugin(
+            marketplace.path(),
+            "demo",
+            "1.0.0",
+            &["claude-code"],
+            &["agents"],
+        );
+        fs::write(project.path().join(".gitignore"), "node_modules/\n").unwrap();
+
+        let mut config = base_config(marketplace.path().to_path_buf());
+        config.plugins = vec![PluginRef {
+            name: "demo".to_string(),
+            namespace: None,
+            version: None,
+        }];
+
+        Syncer::sync(&config, project.path(), SyncOptions::default()).unwrap();
+
+        let gitignore = fs::read_to_string(project.path().join(".gitignore")).unwrap();
+        assert_eq!(
+            gitignore, "node_modules/\n",
+            "must not modify user gitignore"
+        );
+    }
+
+    #[test]
+    fn sync_preserves_user_gitignore_content_outside_block() {
+        let marketplace = TempDir::new().unwrap();
+        let project = TempDir::new().unwrap();
+        write_plugin(
+            marketplace.path(),
+            "demo",
+            "1.0.0",
+            &["claude-code"],
+            &["agents"],
+        );
+        // Seed with user content the user wrote by hand.
+        let user_gitignore = "node_modules/\n*.log\n.env\n";
+        fs::write(project.path().join(".gitignore"), user_gitignore).unwrap();
+
+        let mut config = base_config(marketplace.path().to_path_buf());
+        config.gitignore_managed_links = true;
+        config.plugins = vec![PluginRef {
+            name: "demo".to_string(),
+            namespace: None,
+            version: None,
+        }];
+
+        Syncer::sync(&config, project.path(), SyncOptions::default()).unwrap();
+
+        let after = fs::read_to_string(project.path().join(".gitignore")).unwrap();
+        // User lines intact, in the same order, with the managed block appended.
+        assert!(after.starts_with("node_modules/\n*.log\n.env\n"));
+        assert!(after.contains(crate::gitignore::BEGIN_MARKER));
     }
 }
