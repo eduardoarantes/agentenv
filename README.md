@@ -219,7 +219,8 @@ clean:
 | Field | Required | Description |
 |---|---:|---|
 | `version` | Yes | Config schema version. |
-| `marketplaces` | Yes | Marketplace repos keyed by namespace. |
+| `use_claude_config` | No | Import `extraKnownMarketplaces`, `enabledPlugins`, and `hooks` from `~/.claude/settings.json` and `<project>/.claude/settings.json`. Project Claude wins over global; explicit `.agentrc.yaml` entries win over both. When enabled, the `claude-code` target is dropped from sync because Claude reads its own `.claude/` directly. Defaults to `false`. See [Importing from Claude Code](#importing-from-claude-code) below. |
+| `marketplaces` | Yes¹ | Marketplace repos keyed by namespace. |
 | `marketplaces.<namespace>.path` | Yes | Local cache directory where agentenv clones the marketplace repo (from `remote` at `ref`). It's not a path inside the project — it's an agentenv-managed checkout used as a read-only source. Supports `~` (home), absolute paths, and relative paths (resolved against the project root). Refetches reset the working tree to `origin/<ref>`, so don't hand-edit anything inside it. A common choice is `~/.agentenv/marketplace` to share the cache across projects. |
 | `marketplaces.<namespace>.remote` | Yes | Git remote used to clone/fetch the marketplace. |
 | `marketplaces.<namespace>.ref` | No | Branch, tag, or commit to use. Defaults to `main`. |
@@ -229,6 +230,35 @@ clean:
 | `sync.refetch` | No | Whether to fetch marketplace updates before syncing. |
 | `sync.mode` | No | Link strategy. Initially `symlink`. |
 | `clean.pruneEmptyDirs` | No | After `agentenv clean` removes managed links, prune any now-empty directories inside the project root. Stops at the project root and never touches dirs that still hold user files. Defaults to `true`. |
+
+¹ `marketplaces` may be omitted when `use_claude_config: true` provides at
+least one marketplace via Claude's `extraKnownMarketplaces`.
+
+### Importing from Claude Code
+
+If you already manage marketplaces and plugins through Claude Code, set
+`use_claude_config: true` and skip the duplication. `agentenv` reads
+`extraKnownMarketplaces` and `enabledPlugins` from both
+`~/.claude/settings.json` and `<project>/.claude/settings.json`, layers them
+(project beats global), and uses the result as if you had written it in
+`.agentrc.yaml`. Anything you do write here still wins.
+
+```yaml
+version: 1
+use_claude_config: true
+
+# Propagate Claude's plugins to your other tools. The claude-code target is
+# dropped automatically — Claude reads its own .claude/ directly.
+targets:
+  cursor: {}
+  codex: {}
+```
+
+Inspect what got imported with [`agentenv claude-config show`](#agentenv-claude-config-show).
+
+Hooks are read and surfaced through `claude-config show` but are **not**
+written back to disk in this release — Claude Code already resolves global +
+project hooks at runtime.
 
 ---
 
@@ -328,6 +358,24 @@ After links are removed, `clean` prunes any now-empty directories inside the
 project root (e.g. a leftover `.claude/skills/`). It stops at the project
 root and never touches dirs that still hold user files. Disable via
 `clean.pruneEmptyDirs: false` in `.agentrc.yaml`.
+
+---
+
+### `agentenv claude-config show`
+
+Print the marketplaces, plugins, and hooks `agentenv` would import from your
+Claude `settings.json` files. Useful for debugging
+`use_claude_config: true`.
+
+```bash
+agentenv claude-config show          # human-readable
+agentenv claude-config show --json   # machine-readable
+```
+
+This command reads `~/.claude/settings.json` and
+`<project>/.claude/settings.json` directly — it does not require
+`use_claude_config: true` to be set in `.agentrc.yaml`, so you can preview
+the import before enabling the flag.
 
 ---
 
@@ -437,6 +485,7 @@ Shipped:
 - [x] JSON Schema for `.agentrc.yaml` (`schemas/agentrc.schema.json`)
 - [x] VS Code extension
 - [x] Dry-run mode (`agentenv explain`)
+- [x] Import config from Claude Code (`use_claude_config: true`)
 
 Planned:
 
