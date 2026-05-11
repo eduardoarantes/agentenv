@@ -284,6 +284,40 @@ places — Claude Code reads `CLAUDE.md`, Codex/Cursor/Copilot read
 and so on. Rather than duplicate the same content N times, point at a single
 source file and let agentenv mirror it everywhere.
 
+#### Automatic defaults (`use_claude_config: true`)
+
+When `use_claude_config: true` is set and you haven't written your own
+`instruction_files:` block, agentenv applies a sensible default: it uses
+`CLAUDE.md` (or `AGENTS.md` if no `CLAUDE.md` exists) as the source and
+propagates it to each configured target's expected instruction-sheet path:
+
+| Target | Default destination(s) |
+| --- | --- |
+| `codex`, `cursor`, `copilot`, `gemini-cli` | `AGENTS.md` |
+| `junie` | `.junie/AGENTS.md` |
+| `antigravity` | `agents.md` |
+| (any other) | none |
+
+So a minimal config like
+
+```yaml
+version: 1
+use_claude_config: true
+targets:
+  cursor: {}
+  junie: {}
+```
+
+automatically links `CLAUDE.md → AGENTS.md` and `CLAUDE.md → .junie/AGENTS.md`
+on the next `agentenv sync`. Run `agentenv explain` to see exactly which
+links would be created. To opt out of the defaults, write your own
+`instruction_files:` block (described below) — any explicit entry replaces
+the defaults entirely.
+
+#### Manual propagation
+
+For full control, write `instruction_files:` yourself:
+
 ```yaml
 instruction_files:
   CLAUDE.md:                # source file at project root

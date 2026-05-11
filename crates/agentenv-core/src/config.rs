@@ -245,10 +245,7 @@ impl Config {
         //   merge, and `claude-config show` still works without targets)
         // - `instruction_files` propagation is configured (pure file→file
         //   linking, target-independent)
-        if self.targets.is_empty()
-            && !self.use_claude_config
-            && self.instruction_files.is_empty()
-        {
+        if self.targets.is_empty() && !self.use_claude_config && self.instruction_files.is_empty() {
             return Err(crate::error::Error::Config(
                 "at least one target must be defined".to_string(),
             ));
