@@ -87,9 +87,11 @@ pub(crate) fn default_instruction_destinations_for_target(
 ) -> &'static [&'static str] {
     match target_type {
         // AGENTS.md is the de-facto cross-tool root instruction sheet —
-        // accepted by Codex, Cursor, Copilot, and Gemini CLI (see
+        // accepted by Codex, Cursor, and Copilot (see
         // docs/platform-standards.md §6.1).
-        "codex" | "cursor" | "copilot" | "gemini-cli" => &["AGENTS.md"],
+        "codex" | "cursor" | "copilot" => &["AGENTS.md"],
+        // Gemini CLI's native name is GEMINI.md; also accepts AGENTS.md.
+        "gemini-cli" => &["GEMINI.md", "AGENTS.md"],
         "junie" => &[".junie/AGENTS.md"],
         "antigravity" => &["agents.md"],
         _ => &[],
@@ -778,6 +780,20 @@ mod tests {
         apply_default_instruction_files(&mut config, project.path());
         // No destinations means no entry was inserted.
         assert!(config.instruction_files.is_empty());
+    }
+
+    #[test]
+    fn defaults_for_gemini_cli_include_gemini_md_and_agents_md() {
+        let project = TempDir::new().unwrap();
+        std::fs::write(project.path().join("CLAUDE.md"), "x").unwrap();
+        let mut config = config_with_targets(&[("gemini-cli", "gemini-cli")]);
+        apply_default_instruction_files(&mut config, project.path());
+        let mut dests = config.instruction_files.get("CLAUDE.md").unwrap().clone();
+        dests.sort();
+        assert_eq!(
+            dests,
+            vec!["AGENTS.md".to_string(), "GEMINI.md".to_string()]
+        );
     }
 
     #[test]

@@ -293,7 +293,8 @@ propagates it to each configured target's expected instruction-sheet path:
 
 | Target | Default destination(s) |
 | --- | --- |
-| `codex`, `cursor`, `copilot`, `gemini-cli` | `AGENTS.md` |
+| `codex`, `cursor`, `copilot` | `AGENTS.md` |
+| `gemini-cli` | `GEMINI.md`, `AGENTS.md` |
 | `junie` | `.junie/AGENTS.md` |
 | `antigravity` | `agents.md` |
 | (any other) | none |
