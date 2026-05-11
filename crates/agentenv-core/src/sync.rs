@@ -140,6 +140,10 @@ impl Syncer {
         let (actions, warnings) = enumerate_actions(config, project_root, &resolved)?;
         report.warnings.extend(warnings);
 
+        // Load state up front: instruction-file propagation needs it to
+        // distinguish agentenv-managed symlinks from user files.
+        let old_state = State::load(project_root)?;
+
         let mut new_state = State::default();
         for planned in &actions {
             let action = InstallAction {
@@ -162,7 +166,15 @@ impl Syncer {
             report.installs.push(result);
         }
 
-        let old_state = State::load(project_root)?;
+        // Instruction-file propagation. Pure file→file linking with a
+        // NEVER-OVERRIDE rule: if a destination already holds a non-managed
+        // file, it is left untouched and a warning is emitted.
+        let (instr_installs, instr_state_links, instr_warnings) =
+            execute_instruction_propagations(config, project_root, &old_state)?;
+        report.installs.extend(instr_installs);
+        new_state.links.extend(instr_state_links);
+        report.warnings.extend(instr_warnings);
+
         let kept: HashSet<&Path> = new_state
             .links
             .iter()
@@ -200,9 +212,209 @@ impl Syncer {
                 resolved.push(plugin);
             }
         }
-        let (actions, warnings) = enumerate_actions(config, project_root, &resolved)?;
+        let (mut actions, mut warnings) = enumerate_actions(config, project_root, &resolved)?;
+
+        let old_state = State::load(project_root)?;
+        let (instr_actions, instr_warnings) =
+            plan_instruction_propagations(config, project_root, &old_state)?;
+        actions.extend(instr_actions);
+        warnings.extend(instr_warnings);
+
         Ok(SyncPlan { actions, warnings })
     }
+}
+
+/// Pseudo-plugin and tool labels used for instruction-file propagation.
+/// Surfaces in `agentenv explain`, `list`, and state.json so the user can
+/// see which links agentenv owns.
+pub(crate) const INSTRUCTIONS_PLUGIN: &str = "_instructions";
+pub(crate) const INSTRUCTIONS_TOOL: &str = "instructions";
+
+/// What the engine should do with one instruction-file destination.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InstructionDecision {
+    /// Destination doesn't exist — create the symlink.
+    Create,
+    /// Destination is an agentenv-managed symlink pointing at a different
+    /// source — remove and re-create.
+    Update,
+    /// Destination is an agentenv-managed symlink already pointing at the
+    /// right source — confirm in state, no filesystem change.
+    Idempotent,
+}
+
+/// Inspect a planned instruction-file destination and decide what should
+/// happen. Returns `Ok(Some(decision))` for cases we will act on, or
+/// `Ok(None)` with a warning string when the destination is occupied by a
+/// non-managed file (the NEVER-OVERRIDE rule).
+fn classify_instruction_destination(
+    destination: &Path,
+    expected_source: &Path,
+    managed_targets: &HashSet<&Path>,
+) -> Result<std::result::Result<InstructionDecision, String>> {
+    let meta = match fs::symlink_metadata(destination) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Ok(InstructionDecision::Create));
+        },
+        Err(err) => return Err(Error::Io(err)),
+    };
+
+    let is_managed = managed_targets.contains(destination);
+    if !meta.file_type().is_symlink() {
+        return Ok(Err(format!(
+            "not linking instruction file to {} — a real file is already there",
+            destination.display()
+        )));
+    }
+
+    let actual = fs::read_link(destination).map_err(Error::Io)?;
+    if !is_managed {
+        return Ok(Err(format!(
+            "not linking instruction file to {} — an existing symlink is there (not agentenv-managed)",
+            destination.display()
+        )));
+    }
+
+    if actual == expected_source {
+        Ok(Ok(InstructionDecision::Idempotent))
+    } else {
+        Ok(Ok(InstructionDecision::Update))
+    }
+}
+
+/// Build the list of `(source, destination, decision)` tuples that
+/// instruction-file propagation would act on, plus any warnings produced.
+fn plan_instruction_propagations(
+    config: &Config,
+    project_root: &Path,
+    old_state: &State,
+) -> Result<(Vec<PlannedAction>, Vec<String>)> {
+    let mut actions = Vec::new();
+    let mut warnings = Vec::new();
+    let managed: HashSet<&Path> = old_state
+        .links
+        .iter()
+        .map(|link| link.target.as_path())
+        .collect();
+
+    let mut sources: Vec<&String> = config.instruction_files.keys().collect();
+    sources.sort();
+
+    for source_name in sources {
+        let source_path = project_root.join(source_name);
+        if !source_path.exists() {
+            let dest_count = config.instruction_files[source_name].len();
+            warnings.push(format!(
+                "instruction file `{source_name}` not found at project root; skipping {dest_count} destination(s)"
+            ));
+            continue;
+        }
+
+        for dest in &config.instruction_files[source_name] {
+            let dest_path = project_root.join(dest);
+            match classify_instruction_destination(&dest_path, &source_path, &managed)? {
+                Ok(_decision) => {
+                    actions.push(PlannedAction {
+                        source: source_path.clone(),
+                        target: dest_path,
+                        mode: "symlink".to_string(),
+                        tool: INSTRUCTIONS_TOOL.to_string(),
+                        plugin: INSTRUCTIONS_PLUGIN.to_string(),
+                    });
+                },
+                Err(warning) => warnings.push(warning),
+            }
+        }
+    }
+
+    Ok((actions, warnings))
+}
+
+/// Execute instruction-file propagation. Mirrors
+/// [`plan_instruction_propagations`] but performs the filesystem work and
+/// returns install results + state-link entries for the caller to merge.
+fn execute_instruction_propagations(
+    config: &Config,
+    project_root: &Path,
+    old_state: &State,
+) -> Result<(Vec<InstallResult>, Vec<StateLink>, Vec<String>)> {
+    let mut installs = Vec::new();
+    let mut state_links = Vec::new();
+    let mut warnings = Vec::new();
+    let managed: HashSet<&Path> = old_state
+        .links
+        .iter()
+        .map(|link| link.target.as_path())
+        .collect();
+
+    let mut sources: Vec<&String> = config.instruction_files.keys().collect();
+    sources.sort();
+
+    for source_name in sources {
+        let source_path = project_root.join(source_name);
+        if !source_path.exists() {
+            let dest_count = config.instruction_files[source_name].len();
+            warnings.push(format!(
+                "instruction file `{source_name}` not found at project root; skipping {dest_count} destination(s)"
+            ));
+            continue;
+        }
+
+        for dest in &config.instruction_files[source_name] {
+            let dest_path = project_root.join(dest);
+            let decision =
+                match classify_instruction_destination(&dest_path, &source_path, &managed)? {
+                    Ok(decision) => decision,
+                    Err(warning) => {
+                        warnings.push(warning);
+                        continue;
+                    },
+                };
+
+            let action = InstallAction {
+                source: source_path.clone(),
+                target: dest_path.clone(),
+                mode: "symlink".to_string(),
+                tool: INSTRUCTIONS_TOOL.to_string(),
+            };
+
+            match decision {
+                InstructionDecision::Create | InstructionDecision::Update => {
+                    if matches!(decision, InstructionDecision::Update) {
+                        SymlinkManager::remove(&dest_path)?;
+                    }
+                    if let Some(parent) = dest_path.parent() {
+                        fs::create_dir_all(parent)?;
+                    }
+                    let install = SymlinkManager::install(&action)?;
+                    if install.success {
+                        state_links.push(StateLink {
+                            source: source_path.clone(),
+                            target: dest_path.clone(),
+                            tool: INSTRUCTIONS_TOOL.to_string(),
+                            mode: "symlink".to_string(),
+                            plugin: INSTRUCTIONS_PLUGIN.to_string(),
+                        });
+                    }
+                    installs.push(install);
+                },
+                InstructionDecision::Idempotent => {
+                    // No filesystem change — but record in new state so the
+                    // stale-cleanup pass doesn't remove the link.
+                    state_links.push(StateLink {
+                        source: source_path.clone(),
+                        target: dest_path.clone(),
+                        tool: INSTRUCTIONS_TOOL.to_string(),
+                        mode: "symlink".to_string(),
+                        plugin: INSTRUCTIONS_PLUGIN.to_string(),
+                    });
+                },
+            }
+        }
+    }
+
+    Ok((installs, state_links, warnings))
 }
 
 fn enumerate_actions(
@@ -449,6 +661,7 @@ mod tests {
             sync: SyncConfig::default(),
             clean: CleanConfig::default(),
             use_claude_config: false,
+            instruction_files: HashMap::new(),
             claude_hooks: None,
         }
     }
@@ -732,6 +945,245 @@ mod tests {
         assert!(
             !project.path().join(".cursor/agents/ignored.md").exists(),
             "should not propagate inline .claude/ assets when use_claude_config is false"
+        );
+    }
+
+    /// Empty-marketplace, no-plugins fixture used for instruction-file tests.
+    fn instructions_config(marketplace_path: PathBuf) -> Config {
+        fs::create_dir_all(marketplace_path.join(".claude-plugin")).unwrap();
+        fs::write(
+            marketplace_path.join(".claude-plugin/marketplace.json"),
+            r#"{"name":"empty","owner":{"name":"t"},"plugins":[]}"#,
+        )
+        .unwrap();
+        let mut config = base_config(marketplace_path);
+        config.targets.clear();
+        config
+    }
+
+    #[test]
+    fn instruction_files_link_to_missing_destinations() {
+        let marketplace = TempDir::new().unwrap();
+        let project = TempDir::new().unwrap();
+        fs::write(project.path().join("CLAUDE.md"), "guidance").unwrap();
+
+        let mut config = instructions_config(marketplace.path().to_path_buf());
+        config.instruction_files.insert(
+            "CLAUDE.md".to_string(),
+            vec!["AGENTS.md".to_string(), ".junie/AGENTS.md".to_string()],
+        );
+
+        let report = Syncer::sync(
+            &config,
+            project.path(),
+            SyncOptions {
+                fetch: FetchPolicy::Skip,
+            },
+        )
+        .unwrap();
+
+        assert!(report.all_succeeded(), "report: {report:?}");
+        assert_eq!(report.installs.len(), 2);
+        let agents = project.path().join("AGENTS.md");
+        let junie = project.path().join(".junie/AGENTS.md");
+        assert!(agents.is_symlink());
+        assert!(junie.is_symlink());
+        assert_eq!(
+            fs::read_link(&agents).unwrap(),
+            project.path().join("CLAUDE.md")
+        );
+    }
+
+    #[test]
+    fn instruction_files_never_override_user_file() {
+        let marketplace = TempDir::new().unwrap();
+        let project = TempDir::new().unwrap();
+        fs::write(project.path().join("CLAUDE.md"), "guidance").unwrap();
+        // User already has AGENTS.md with their own content. Must be preserved.
+        fs::write(project.path().join("AGENTS.md"), "user-content").unwrap();
+
+        let mut config = instructions_config(marketplace.path().to_path_buf());
+        config
+            .instruction_files
+            .insert("CLAUDE.md".to_string(), vec!["AGENTS.md".to_string()]);
+
+        let report = Syncer::sync(
+            &config,
+            project.path(),
+            SyncOptions {
+                fetch: FetchPolicy::Skip,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(report.installs.len(), 0, "must not install over user file");
+        assert!(
+            !project.path().join("AGENTS.md").is_symlink(),
+            "user file must remain a regular file"
+        );
+        assert_eq!(
+            fs::read_to_string(project.path().join("AGENTS.md")).unwrap(),
+            "user-content"
+        );
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.contains("real file is already there")),
+            "expected NEVER-OVERRIDE warning, got: {:?}",
+            report.warnings
+        );
+    }
+
+    #[test]
+    fn instruction_files_idempotent_on_resync() {
+        let marketplace = TempDir::new().unwrap();
+        let project = TempDir::new().unwrap();
+        fs::write(project.path().join("CLAUDE.md"), "guidance").unwrap();
+
+        let mut config = instructions_config(marketplace.path().to_path_buf());
+        config
+            .instruction_files
+            .insert("CLAUDE.md".to_string(), vec!["AGENTS.md".to_string()]);
+
+        Syncer::sync(
+            &config,
+            project.path(),
+            SyncOptions {
+                fetch: FetchPolicy::Skip,
+            },
+        )
+        .unwrap();
+        let report = Syncer::sync(
+            &config,
+            project.path(),
+            SyncOptions {
+                fetch: FetchPolicy::Skip,
+            },
+        )
+        .unwrap();
+
+        // Second sync: link already correct, so no fresh install was needed
+        // (idempotent path) but the link must remain in state and on disk.
+        assert_eq!(report.installs.len(), 0);
+        assert!(project.path().join("AGENTS.md").is_symlink());
+        assert_eq!(report.stale_removed.len(), 0);
+    }
+
+    #[test]
+    fn instruction_files_warn_when_source_missing() {
+        let marketplace = TempDir::new().unwrap();
+        let project = TempDir::new().unwrap();
+        // No CLAUDE.md created.
+
+        let mut config = instructions_config(marketplace.path().to_path_buf());
+        config
+            .instruction_files
+            .insert("CLAUDE.md".to_string(), vec!["AGENTS.md".to_string()]);
+
+        let report = Syncer::sync(
+            &config,
+            project.path(),
+            SyncOptions {
+                fetch: FetchPolicy::Skip,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(report.installs.len(), 0);
+        assert!(!project.path().join("AGENTS.md").exists());
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|w| w.contains("not found at project root")),
+            "expected source-missing warning, got: {:?}",
+            report.warnings
+        );
+    }
+
+    #[test]
+    fn instruction_files_removed_on_clean_via_state() {
+        let marketplace = TempDir::new().unwrap();
+        let project = TempDir::new().unwrap();
+        fs::write(project.path().join("CLAUDE.md"), "guidance").unwrap();
+
+        let mut config = instructions_config(marketplace.path().to_path_buf());
+        config
+            .instruction_files
+            .insert("CLAUDE.md".to_string(), vec!["AGENTS.md".to_string()]);
+
+        Syncer::sync(
+            &config,
+            project.path(),
+            SyncOptions {
+                fetch: FetchPolicy::Skip,
+            },
+        )
+        .unwrap();
+        assert!(project.path().join("AGENTS.md").is_symlink());
+
+        // Drop the entry from config and re-sync — the link should be
+        // detected as stale and removed by the existing stale-cleanup pass.
+        config.instruction_files.clear();
+        let report = Syncer::sync(
+            &config,
+            project.path(),
+            SyncOptions {
+                fetch: FetchPolicy::Skip,
+            },
+        )
+        .unwrap();
+        assert!(
+            !project.path().join("AGENTS.md").exists(),
+            "instruction-file link should be cleaned up when removed from config"
+        );
+        assert_eq!(report.stale_removed.len(), 1);
+    }
+
+    #[test]
+    fn instruction_files_update_when_source_changes() {
+        let marketplace = TempDir::new().unwrap();
+        let project = TempDir::new().unwrap();
+        fs::write(project.path().join("CLAUDE.md"), "first").unwrap();
+        fs::write(project.path().join("CLAUDE2.md"), "second").unwrap();
+
+        let mut config = instructions_config(marketplace.path().to_path_buf());
+        config
+            .instruction_files
+            .insert("CLAUDE.md".to_string(), vec!["AGENTS.md".to_string()]);
+
+        Syncer::sync(
+            &config,
+            project.path(),
+            SyncOptions {
+                fetch: FetchPolicy::Skip,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_link(project.path().join("AGENTS.md")).unwrap(),
+            project.path().join("CLAUDE.md")
+        );
+
+        // Repoint AGENTS.md at CLAUDE2.md — agentenv owns the link, so
+        // updating is allowed.
+        config.instruction_files.clear();
+        config
+            .instruction_files
+            .insert("CLAUDE2.md".to_string(), vec!["AGENTS.md".to_string()]);
+        let report = Syncer::sync(
+            &config,
+            project.path(),
+            SyncOptions {
+                fetch: FetchPolicy::Skip,
+            },
+        )
+        .unwrap();
+        assert!(report.all_succeeded(), "report: {report:?}");
+        assert_eq!(
+            fs::read_link(project.path().join("AGENTS.md")).unwrap(),
+            project.path().join("CLAUDE2.md")
         );
     }
 }

@@ -114,6 +114,17 @@
         }
       }
     },
+    "instruction_files": {
+      "type": "object",
+      "description": "Cross-tool instruction-file propagation. Each key is a source file at the project root (e.g. CLAUDE.md, AGENTS.md, CURSOR.md). Each value is a list of project-relative destination paths to symlink it from. Never overrides existing user files; agentenv-managed symlinks are updated to point at the current source.",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "description": "Destination path relative to the project root."
+        }
+      }
+    },
     "sync": {
       "type": "object",
       "description": "Sync behavior configuration",

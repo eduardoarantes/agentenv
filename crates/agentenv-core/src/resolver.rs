@@ -179,6 +179,7 @@ mod tests {
             sync: Default::default(),
             clean: Default::default(),
             use_claude_config: false,
+            instruction_files: std::collections::HashMap::new(),
             claude_hooks: None,
         }
     }

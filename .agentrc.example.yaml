@@ -73,3 +73,17 @@ clean:
   # the project root that are now empty (e.g. a leftover `.claude/skills/`).
   # Stops at the project root and never touches dirs that still hold user files.
   pruneEmptyDirs: true
+
+# Mirror a single instruction file to the various paths different AI tools
+# expect. Each key is a file at the project root; each value is a list of
+# project-relative destinations to symlink it from. agentenv NEVER overrides
+# an existing user file — it skips with a warning if the destination already
+# has content it doesn't own.
+#
+# instruction_files:
+#   CLAUDE.md:
+#     - AGENTS.md           # Codex / Cursor / Copilot read this
+#     - .junie/AGENTS.md    # JetBrains Junie
+#     - agents.md           # Google Antigravity
+#   CURSOR.md:
+#     - .cursor/rules/main.md

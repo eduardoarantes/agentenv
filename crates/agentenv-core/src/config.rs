@@ -38,6 +38,19 @@ pub struct Config {
     #[serde(default)]
     pub clean: CleanConfig,
 
+    /// Cross-tool instruction-file propagation. Each key is a source file
+    /// at the project root (e.g. `CLAUDE.md`, `AGENTS.md`, `CURSOR.md`);
+    /// each value is a list of project-relative destination paths to
+    /// symlink it from (e.g. `.junie/AGENTS.md`).
+    ///
+    /// Never overrides existing files: if a destination already contains
+    /// user content (regular file or foreign symlink), it is left untouched
+    /// and a warning is emitted. Agentenv-managed symlinks pointing at a
+    /// different source are updated; pointing at the same source are
+    /// no-ops.
+    #[serde(default)]
+    pub instruction_files: HashMap<String, Vec<String>>,
+
     /// Runtime-only: hooks imported from Claude `settings.json`. Not
     /// serialized to or from disk; populated by `ClaudeConfigLoader` when
     /// `use_claude_config: true`. Exposed for the `claude-config show`
@@ -227,10 +240,12 @@ impl Config {
             return Err(crate::error::Error::Config(msg.to_string()));
         }
 
-        // When `use_claude_config: true`, the `claude-code` target is dropped
-        // during merge. It's valid to end up with zero targets — `sync` is
-        // then a no-op while `claude-config show` still works.
-        if self.targets.is_empty() && !self.use_claude_config {
+        // Zero targets is valid when there's other work for sync to do:
+        // - `use_claude_config: true` (claude-code may be dropped during
+        //   merge, and `claude-config show` still works without targets)
+        // - `instruction_files` propagation is configured (pure file→file
+        //   linking, target-independent)
+        if self.targets.is_empty() && !self.use_claude_config && self.instruction_files.is_empty() {
             return Err(crate::error::Error::Config(
                 "at least one target must be defined".to_string(),
             ));
@@ -463,6 +478,7 @@ mod tests {
             sync: SyncConfig::default(),
             clean: CleanConfig::default(),
             use_claude_config: false,
+            instruction_files: HashMap::new(),
             claude_hooks: None,
         };
 
@@ -490,6 +506,7 @@ mod tests {
             sync: SyncConfig::default(),
             clean: CleanConfig::default(),
             use_claude_config: false,
+            instruction_files: HashMap::new(),
             claude_hooks: None,
         };
 
@@ -530,6 +547,7 @@ mod tests {
             sync: SyncConfig::default(),
             clean: CleanConfig::default(),
             use_claude_config: false,
+            instruction_files: HashMap::new(),
             claude_hooks: None,
         };
 
@@ -574,6 +592,7 @@ mod tests {
             sync: SyncConfig::default(),
             clean: CleanConfig::default(),
             use_claude_config: false,
+            instruction_files: HashMap::new(),
             claude_hooks: None,
         };
 
@@ -618,6 +637,7 @@ mod tests {
             sync: SyncConfig::default(),
             clean: CleanConfig::default(),
             use_claude_config: false,
+            instruction_files: HashMap::new(),
             claude_hooks: None,
         };
 
@@ -666,6 +686,7 @@ mod tests {
             sync: SyncConfig::default(),
             clean: CleanConfig::default(),
             use_claude_config: false,
+            instruction_files: HashMap::new(),
             claude_hooks: None,
         };
 
@@ -704,6 +725,7 @@ mod tests {
             sync: SyncConfig::default(),
             clean: CleanConfig::default(),
             use_claude_config: false,
+            instruction_files: HashMap::new(),
             claude_hooks: None,
         };
 
@@ -732,6 +754,7 @@ mod tests {
             sync: SyncConfig::default(),
             clean: CleanConfig::default(),
             use_claude_config: false,
+            instruction_files: HashMap::new(),
             claude_hooks: None,
         };
 
@@ -757,6 +780,7 @@ mod tests {
             sync: SyncConfig::default(),
             clean: CleanConfig::default(),
             use_claude_config: false,
+            instruction_files: HashMap::new(),
             claude_hooks: None,
         };
 
@@ -797,6 +821,7 @@ mod tests {
             sync: SyncConfig::default(),
             clean: CleanConfig::default(),
             use_claude_config: false,
+            instruction_files: HashMap::new(),
             claude_hooks: None,
         };
 
@@ -831,6 +856,7 @@ mod tests {
             sync: SyncConfig::default(),
             clean: CleanConfig::default(),
             use_claude_config: false,
+            instruction_files: HashMap::new(),
             claude_hooks: None,
         };
 
@@ -850,6 +876,7 @@ mod tests {
             targets: HashMap::new(),
             sync: SyncConfig::default(),
             clean: CleanConfig::default(),
+            instruction_files: HashMap::new(),
             use_claude_config: true,
             claude_hooks: None,
         }

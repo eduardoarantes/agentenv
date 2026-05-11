@@ -45,6 +45,13 @@ impl ConfigLoader {
                 None => ClaudeConfigLoader::load(project_root)?,
             };
             config.merge_claude_import(import);
+            // Apply target defaults BEFORE deriving default instruction
+            // destinations — the destination set is keyed by the resolved
+            // target `type`, which `apply_defaults` populates.
+            config = config.apply_defaults();
+            crate::claude_config::apply_default_instruction_files(&mut config, project_root);
+            config.validate()?;
+            return Ok(config);
         }
 
         config.validate()?;
