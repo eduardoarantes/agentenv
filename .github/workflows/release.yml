@@ -42,7 +42,11 @@ on:
   pull_request:
   push:
     tags:
-      - '**[0-9]+.[0-9]+.[0-9]+*'
+      # Restricted to bare CLI tags (e.g. `v0.3.1`). The default dist
+      # pattern (`**[0-9]+.[0-9]+.[0-9]+*`) also matched `vscode-v*` tags,
+      # firing this CLI release pipeline for VS Code extension releases.
+      # Keep this in sync with `publish-crates.yml`.
+      - 'v[0-9]+.[0-9]+.[0-9]+*'
 
 jobs:
   # Run 'dist plan' (or host) to determine what tasks we need to do
