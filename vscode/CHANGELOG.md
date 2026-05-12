@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.1
+
+- Probe the agentenv CLI on activation when `.agentrc.yaml` is present but `syncOnOpen` is `false` — surfaces a missing CLI immediately instead of waiting for the first command
+- Missing-CLI dialog now includes an **Install Guide** action that opens the README install section, plus full install commands (Homebrew / npm / cargo) written to the output channel
+
 ## 0.3.0
 
 - First release published via the `publish-vscode` GitHub Actions workflow
