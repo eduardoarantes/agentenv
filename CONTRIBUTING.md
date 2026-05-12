@@ -372,6 +372,16 @@ Before the core model is stable, avoid:
 
 ---
 
+## Releasing
+
+When changes have landed on `main` and you're ready to publish the CLI or
+the VS Code extension to crates.io / npm / Homebrew / Open VSX / VS Code
+Marketplace, follow the runbook at [docs/RELEASING.md](docs/RELEASING.md).
+It covers the automated tag-push flow for each channel plus the one
+manual step (VS Code Marketplace upload).
+
+---
+
 ## Security considerations
 
 `agentenv` manipulates filesystem links and fetches Git repositories. Contributions should consider:
