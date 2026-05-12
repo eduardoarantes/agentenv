@@ -25,6 +25,14 @@ multiple_crate_versions = "allow"
 useless_vec = "allow"
 module_name_repetitions = "allow"
 
+[workspace.metadata.dist]
+# Allow `.github/workflows/release.yml` to drift from what `dist generate`
+# would produce, so we can narrow its tag pattern to bare CLI releases
+# (`vX.Y.Z`) without `dist plan` failing on the diff. If you re-run
+# `dist init`/`generate`, re-apply the narrower tag pattern by hand and
+# keep this allow-list entry.
+allow-dirty = ["ci"]
+
 # The profile that 'dist' will build with
 [profile.dist]
 inherits = "release"
