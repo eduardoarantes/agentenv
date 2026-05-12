@@ -3,7 +3,10 @@ name: Publish to crates.io
 on:
   push:
     tags:
-      - '**[0-9]+.[0-9]+.[0-9]+*'
+      # Restricted to bare CLI tags (e.g. `v0.3.1`) so `vscode-v*` tags
+      # don't trigger redundant crates.io publishes. Keep in sync with
+      # `release.yml`.
+      - 'v[0-9]+.[0-9]+.[0-9]+*'
   workflow_dispatch:
 
 permissions:
