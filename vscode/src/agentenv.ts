@@ -109,20 +109,47 @@ export function runAgentenv(args: string[], opts: RunOptions = {}): Promise<RunR
   });
 }
 
+/** Link to the install section of the project README. */
+const INSTALL_GUIDE_URL = 'https://github.com/eduardoarantes/agentenv#installation';
+
+/** Concise multi-method install instructions logged to the output channel. */
+const INSTALL_HINT_LINES = [
+  'Install the agentenv CLI with one of:',
+  '  brew install eduardoarantes/agentenv/agentenv',
+  '  npm install -g @eduardoarantes/agentenv',
+  '  cargo install agentenv',
+  'Or set "agentenv.path" in VS Code settings to point at an existing binary.',
+  `Full instructions: ${INSTALL_GUIDE_URL}`,
+];
+
+function logInstallHint(): void {
+  const channel = getOutputChannel();
+  for (const line of INSTALL_HINT_LINES) {
+    channel.appendLine(line);
+  }
+}
+
 /**
  * Present a user-facing error for spawn failures. Returns true if the error was
  * an ENOENT (binary missing), so callers can short-circuit further messaging.
+ *
+ * On ENOENT we also write install instructions to the output channel so users
+ * have the install commands available even after dismissing the notification.
  */
 export async function handleSpawnError(err: unknown): Promise<boolean> {
   const errno = err as NodeJS.ErrnoException | undefined;
   if (errno?.code === 'ENOENT') {
     const binary = getConfiguredBinary();
+    logInstallHint();
     const choice = await vscode.window.showErrorMessage(
-      `Could not find the agentenv binary "${binary}". Install it or set "agentenv.path".`,
+      `Could not find the agentenv CLI ("${binary}"). Install it with Homebrew, npm, or cargo, or set "agentenv.path".`,
+      'Install Guide',
       'Open Settings',
       'Show Output'
     );
-    if (choice === 'Open Settings') {
+    if (choice === 'Install Guide') {
+      await vscode.env.openExternal(vscode.Uri.parse(INSTALL_GUIDE_URL));
+    } else if (choice === 'Open Settings') {
       await vscode.commands.executeCommand('workbench.action.openSettings', 'agentenv.path');
     } else if (choice === 'Show Output') {
       getOutputChannel().show(true);

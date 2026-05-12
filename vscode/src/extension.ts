@@ -95,18 +95,43 @@ function setupConfigWatcher(context: vscode.ExtensionContext): void {
 }
 
 async function maybeRunStartupSync(): Promise<void> {
-  const config = vscode.workspace.getConfiguration('agentenv');
-  if (!config.get<boolean>('syncOnOpen', true)) {
-    return;
-  }
   const folder = getPrimaryWorkspaceFolder();
   if (!folder) {
     return;
   }
   if (!(await configFileExists(folder))) {
+    // No `.agentrc.yaml` here — the user hasn't expressed intent to use
+    // agentenv in this workspace, so stay silent (don't probe, don't sync).
     return;
   }
-  await runSyncCommand({ silentSuccess: true });
+
+  const syncOnOpen = vscode.workspace
+    .getConfiguration('agentenv')
+    .get<boolean>('syncOnOpen', true);
+  if (syncOnOpen) {
+    // A startup sync surfaces missing-CLI errors itself via handleSpawnError.
+    await runSyncCommand({ silentSuccess: true });
+    return;
+  }
+
+  // `syncOnOpen` is off but the workspace clearly intends to use agentenv
+  // (`.agentrc.yaml` is present). Probe the CLI once so the user finds out
+  // up front rather than the first time they invoke a command.
+  await probeAgentenvCli();
+}
+
+/**
+ * One-shot probe: spawn `agentenv --version` and route ENOENT through the
+ * shared `handleSpawnError` dialog. Any non-ENOENT failure (e.g. a broken
+ * install that exits non-zero) is intentionally ignored — we only want to
+ * alert when the binary itself is missing.
+ */
+async function probeAgentenvCli(): Promise<void> {
+  try {
+    await runAgentenv(['--version']);
+  } catch (err) {
+    await handleSpawnError(err);
+  }
 }
 
 interface SyncCommandOptions {
