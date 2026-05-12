@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.2
+
+- Release plumbing: `vscode-v*` tags no longer trigger the CLI release pipeline (#8). No user-facing extension changes.
+
 ## 0.3.1
 
 - Probe the agentenv CLI on activation when `.agentrc.yaml` is present but `syncOnOpen` is `false` — surfaces a missing CLI immediately instead of waiting for the first command
