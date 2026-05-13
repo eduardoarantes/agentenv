@@ -307,6 +307,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn write_into(project: &Path, _home: &Path, canonical: &Canonical) -> Result<WriteReport> {
         // We can't easily redirect `dirs::home_dir()` per-test, so we exercise
         // the writer's pure pieces (splice + collect_stop_commands) directly
@@ -316,10 +317,13 @@ mod tests {
 
     /// Cargo runs tests in parallel; mutating `$HOME` is process-global, so
     /// we serialize every codex test that touches it through this mutex.
+    /// (Unix-only — on Windows `dirs::home_dir()` reads `%USERPROFILE%`.)
+    #[cfg(unix)]
     static HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// Run with $HOME pointed at a temp dir for isolation. Returns the home
     /// path so callers can read the config back.
+    #[cfg(unix)]
     fn with_isolated_home<F: FnOnce(&Path) -> Result<WriteReport>>(
         f: F,
     ) -> (Result<WriteReport>, TempDir) {
@@ -402,6 +406,12 @@ mod tests {
         assert_eq!(shell_single_quote("echo 'hi'"), "'echo '\\''hi'\\'''");
     }
 
+    // The tests below mutate `$HOME` to redirect `dirs::home_dir()` to a
+    // temp dir. On Windows that resolver reads `%USERPROFILE%` instead, so
+    // these tests would need a Windows-specific override. Codex CLI is
+    // Unix-primary, so gate the HOME-mutating cases to Unix and keep the
+    // pure logic tests (above) cross-platform.
+    #[cfg(unix)]
     #[test]
     fn writes_dispatcher_and_notify_when_stop_present() {
         let project = TempDir::new().unwrap();
@@ -426,6 +436,7 @@ mod tests {
         assert!(config.contains(dispatcher.to_string_lossy().as_ref()));
     }
 
+    #[cfg(unix)]
     #[test]
     fn write_with_no_stop_hooks_does_not_create_file_or_dispatcher() {
         let project = TempDir::new().unwrap();
@@ -443,6 +454,7 @@ mod tests {
         assert!(!home.path().join(".codex/config.toml").exists());
     }
 
+    #[cfg(unix)]
     #[test]
     fn refuses_user_authored_notify() {
         let project = TempDir::new().unwrap();
@@ -462,6 +474,7 @@ mod tests {
         assert!(msg.contains("refuses"), "got: {msg}");
     }
 
+    #[cfg(unix)]
     #[test]
     fn preserves_user_config_around_managed_block() {
         let project = TempDir::new().unwrap();
@@ -487,6 +500,7 @@ mod tests {
         assert!(after.contains(BEGIN_MARKER));
     }
 
+    #[cfg(unix)]
     #[test]
     fn empty_stops_strips_existing_managed_block() {
         let project = TempDir::new().unwrap();

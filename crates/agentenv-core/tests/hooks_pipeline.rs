@@ -16,6 +16,8 @@ use tempfile::TempDir;
 
 /// Serialize tests that need an isolated $HOME (codex writer reads it via
 /// `dirs::home_dir()`, which goes through process-global env state).
+/// Unix-only — on Windows the resolver reads `%USERPROFILE%`.
+#[cfg(unix)]
 static HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn base_config() -> Config {
@@ -52,6 +54,10 @@ fn empty_target() -> TargetConfig {
     }
 }
 
+// codex writer reads `~/.codex/config.toml` via `dirs::home_dir()`. We mock
+// it by setting `$HOME` to a temp dir, which only works on Unix; on Windows
+// the resolver reads `%USERPROFILE%`. Codex CLI is Unix-primary, so gate.
+#[cfg(unix)]
 #[test]
 fn end_to_end_materializes_claude_hooks_to_cursor_and_codex() {
     let _guard = HOME_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -127,11 +133,8 @@ fn end_to_end_materializes_claude_hooks_to_cursor_and_codex() {
 
 #[test]
 fn second_run_is_idempotent_on_cursor() {
-    let _guard = HOME_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-    let home = TempDir::new().unwrap();
+    // Cursor-only — no codex target → pipeline never touches $HOME.
     let project = TempDir::new().unwrap();
-    let saved = std::env::var_os("HOME");
-    std::env::set_var("HOME", home.path());
 
     let mut config = base_config();
     config.source = Some("claude-code".to_string());
@@ -149,11 +152,6 @@ fn second_run_is_idempotent_on_cursor() {
     let second = std::fs::read_to_string(cursor_writer::destination(project.path())).unwrap();
 
     assert_eq!(first, second, "second pipeline run must be byte-identical");
-
-    match saved {
-        Some(v) => std::env::set_var("HOME", v),
-        None => std::env::remove_var("HOME"),
-    }
 }
 
 #[test]
