@@ -25,3 +25,9 @@ npm-scope = "@eduardoarantes"
 publish-jobs = ["homebrew", "npm"]
 # Build the full matrix on PRs (no publish) so platform breakage is caught pre-tag
 pr-run-mode = "upload"
+# Allow `.github/workflows/release.yml` to drift from what `dist generate`
+# would produce — we narrowed the tag pattern from `**[0-9]+.[0-9]+.[0-9]+*`
+# to `v[0-9]+.[0-9]+.[0-9]+*` so `vscode-v*` tags no longer trigger this
+# CLI release pipeline. If you re-run `dist init`/`generate`, re-apply the
+# narrowed pattern and keep this allow-list entry.
+allow-dirty = ["ci"]
