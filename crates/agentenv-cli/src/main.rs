@@ -124,8 +124,18 @@ fn load_config(project_root: &Path) -> Result<Config> {
 }
 
 fn run_init(project_root: &Path, force: bool) -> Result<()> {
-    let path = Initializer::write_default_config(project_root, force)?;
-    println!("{} {}", "Created".green().bold(), path.display());
+    let outcome = Initializer::run(project_root, force)?;
+    println!(
+        "{} {}",
+        "Created".green().bold(),
+        outcome.config_path.display()
+    );
+    if outcome.gitignore_updated {
+        println!(
+            "{} added .agentenv/ to .gitignore",
+            "Updated".green().bold()
+        );
+    }
     println!("Edit it to add plugins and targets, then run `agentenv sync`.");
     Ok(())
 }

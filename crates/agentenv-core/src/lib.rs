@@ -25,7 +25,7 @@ pub use claude_config::{ClaudeConfigImport, ClaudeConfigLoader};
 pub use clean::{CleanOptions, CleanReport, Cleaner};
 pub use config::{CleanConfig, Config, SourceMapping, TargetConfig};
 pub use error::{Error, Result};
-pub use init::Initializer;
+pub use init::{InitOutcome, Initializer};
 pub use loader::ConfigLoader;
 pub use marketplace::Marketplace;
 pub use plugin::Plugin;
