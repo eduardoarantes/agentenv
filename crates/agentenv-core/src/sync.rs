@@ -175,6 +175,12 @@ impl Syncer {
         new_state.links.extend(instr_state_links);
         report.warnings.extend(instr_warnings);
 
+        // Hooks pipeline: source → canonical → cursor/codex. Runs only if at
+        // least one configured target is a v1 hook write target. Refuse-on-
+        // conflict errors here propagate as hard errors from sync.
+        let hooks_report = crate::hooks::pipeline::run(config, project_root)?;
+        report.warnings.extend(hooks_report.warnings);
+
         let kept: HashSet<&Path> = new_state
             .links
             .iter()
@@ -675,6 +681,7 @@ mod tests {
             gitignore_managed_links: false,
             instruction_files: HashMap::new(),
             claude_hooks: None,
+            source: None,
         }
     }
 

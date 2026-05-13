@@ -182,6 +182,7 @@ mod tests {
             gitignore_managed_links: false,
             instruction_files: std::collections::HashMap::new(),
             claude_hooks: None,
+            source: None,
         }
     }
 

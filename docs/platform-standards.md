@@ -352,12 +352,16 @@ time. Capabilities a target doesn't natively support are simply not exported.
 | `cursor`       | (skip — no documented project path)      |
 | `junie`        | (skip — no separate concept)             |
 
-### Hooks (JSON files; merged at install rather than symlinked)
+### Hooks
 
-Hooks need format conversion across tools (Claude Code's 28 events vs
-Copilot's 6). Defer wholesale hook portability — initially, sync hooks only to
-`claude-code` plugins via `hooks/hooks.json`, and let users author per-target
-hooks manually.
+Hooks are **source-driven**: a single target tool's existing hooks file is
+declared as the source of truth via `source:` in `.agentrc.yaml`, and
+`agentenv sync` translates it losslessly into `.agentenv/hooks.canonical.yaml`
+and then renders it out to every other supporting target's native file.
+[HOOKS.md](HOOKS.md) is the canonical specification. v1 implements
+`source: claude-code` plus writers for `cursor` and `codex`; the source is
+always read-only. The per-tool path table in §4 above remains the source of
+truth for filesystem locations.
 
 ### MCP
 
@@ -389,9 +393,9 @@ Claude Code MCP JSON is interoperable. Codex needs TOML translation. Defer.
    CLI all accept it for skills. We default to tool-native paths because they
    are most discoverable when users edit config by hand. A future "portable
    mode" target could emit only `.agents/skills/`.
-4. **Hook portability.** Same conceptual feature, totally different event
-   names and JSON shapes. Either we own a translation layer (real complexity)
-   or we treat hooks as per-target rather than per-plugin.
+4. **Hook portability.** Resolved in [HOOKS.md](HOOKS.md) — `agentenv` owns a
+   canonical PascalCase event vocabulary plus per-target translators. The spec
+   is in place; implementation is pending on branch `feat/hooks-integration`.
 5. **`AGENTS.md` syncing.** Closest thing to a universal cross-tool surface.
    Out of scope for the skill installer model; may warrant a separate
    `agentenv apply-agents-md` flow later.

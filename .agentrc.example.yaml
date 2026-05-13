@@ -17,6 +17,16 @@ version: 1
 # Inspect what gets imported with: `agentenv claude-config show`
 use_claude_config: false
 
+# Opt-in to the source-driven hooks pipeline. When set, agentenv reads the
+# named target's existing hooks file losslessly into
+# `.agentenv/hooks.canonical.yaml` and renders that canonical out to every
+# other supporting target (cursor, codex). The named source is ALWAYS
+# read-only — sync never writes back to it. Omit this field if you don't
+# want hooks propagation. See docs/HOOKS.md for the full spec.
+#
+# v1 sources: claude-code. v1 write targets: cursor, codex.
+# source: claude-code
+
 # Marketplaces can be configured with namespaces
 # This allows for multiple marketplace sources
 marketplaces:
