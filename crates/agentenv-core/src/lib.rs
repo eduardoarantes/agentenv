@@ -11,6 +11,7 @@ pub mod clean;
 pub mod config;
 pub mod error;
 pub mod gitignore;
+pub mod hooks;
 pub mod init;
 pub mod loader;
 pub mod marketplace;

@@ -62,9 +62,19 @@ pub struct Config {
     /// Runtime-only: hooks imported from Claude `settings.json`. Not
     /// serialized to or from disk; populated by `ClaudeConfigLoader` when
     /// `use_claude_config: true`. Exposed for the `claude-config show`
-    /// command and reserved for future hook materialization.
+    /// command and consumed by the hooks pipeline when
+    /// `source = "claude-code"`.
     #[serde(skip)]
     pub claude_hooks: Option<serde_json::Value>,
+
+    /// Source target whose native hooks file feeds the hooks pipeline.
+    /// Read losslessly into `.agentenv/hooks.canonical.yaml` and written
+    /// out to every other supporting target. Must be one of the known
+    /// target names that has a hook convention (`claude-code`, `cursor`,
+    /// `codex`, `copilot`). When the hooks pipeline runs, this field is
+    /// mandatory — see [`Config::validate_hooks_source`].
+    #[serde(default)]
+    pub source: Option<String>,
 }
 
 /// Marketplace configuration
@@ -229,6 +239,16 @@ fn default_mode() -> String {
     "symlink".to_string()
 }
 
+/// Target names that have a documented hooks convention. Used to validate
+/// `source` and to gate the hooks pipeline in sync.
+pub const HOOK_CAPABLE_TARGETS: &[&str] = &["claude-code", "cursor", "codex", "copilot"];
+
+/// Target names this v1 implementation can READ hooks from.
+pub const HOOK_SOURCE_TARGETS_V1: &[&str] = &["claude-code"];
+
+/// Target names this v1 implementation can WRITE hooks to.
+pub const HOOK_WRITE_TARGETS_V1: &[&str] = &["cursor", "codex"];
+
 impl Config {
     /// Validate configuration
     pub fn validate(&self) -> Result<()> {
@@ -237,6 +257,23 @@ impl Config {
                 "unsupported config version: {}",
                 self.version
             )));
+        }
+
+        if let Some(source) = self.source.as_deref() {
+            if !HOOK_CAPABLE_TARGETS.contains(&source) {
+                return Err(crate::error::Error::Config(format!(
+                    "source: {source} is not a target with a documented hooks convention; \
+                     pick one of: {}",
+                    HOOK_CAPABLE_TARGETS.join(", "),
+                )));
+            }
+            if !HOOK_SOURCE_TARGETS_V1.contains(&source) {
+                return Err(crate::error::Error::Config(format!(
+                    "source: {source} is recognized but not yet implemented as a hook source; \
+                     v1 supports: {}",
+                    HOOK_SOURCE_TARGETS_V1.join(", "),
+                )));
+            }
         }
 
         if self.marketplaces.is_empty() {
@@ -387,6 +424,18 @@ impl Config {
             other => Some(other),
         };
     }
+
+    /// Names of every configured target that is a v1 hook write target,
+    /// excluding `source` (which is always read-only).
+    pub fn hook_write_targets(&self) -> Vec<String> {
+        let source = self.source.as_deref();
+        self.targets
+            .keys()
+            .filter(|name| HOOK_WRITE_TARGETS_V1.contains(&name.as_str()))
+            .filter(|name| Some(name.as_str()) != source)
+            .cloned()
+            .collect()
+    }
 }
 
 impl TargetConfig {
@@ -489,6 +538,7 @@ mod tests {
             gitignore_managed_links: false,
             instruction_files: HashMap::new(),
             claude_hooks: None,
+            source: None,
         };
 
         assert!(config.validate().is_err());
@@ -518,6 +568,7 @@ mod tests {
             gitignore_managed_links: false,
             instruction_files: HashMap::new(),
             claude_hooks: None,
+            source: None,
         };
 
         assert!(config.validate().is_err());
@@ -560,6 +611,7 @@ mod tests {
             gitignore_managed_links: false,
             instruction_files: HashMap::new(),
             claude_hooks: None,
+            source: None,
         };
 
         assert!(config.validate().is_ok());
@@ -606,6 +658,7 @@ mod tests {
             gitignore_managed_links: false,
             instruction_files: HashMap::new(),
             claude_hooks: None,
+            source: None,
         };
 
         assert!(config.validate().is_err());
@@ -652,6 +705,7 @@ mod tests {
             gitignore_managed_links: false,
             instruction_files: HashMap::new(),
             claude_hooks: None,
+            source: None,
         };
 
         assert!(config.validate().is_ok());
@@ -702,6 +756,7 @@ mod tests {
             gitignore_managed_links: false,
             instruction_files: HashMap::new(),
             claude_hooks: None,
+            source: None,
         };
 
         assert!(config.get_marketplace("default").is_some());
@@ -742,6 +797,7 @@ mod tests {
             gitignore_managed_links: false,
             instruction_files: HashMap::new(),
             claude_hooks: None,
+            source: None,
         };
 
         let names = config.target_names();
@@ -772,6 +828,7 @@ mod tests {
             gitignore_managed_links: false,
             instruction_files: HashMap::new(),
             claude_hooks: None,
+            source: None,
         };
 
         assert!(config.validate().is_ok());
@@ -799,6 +856,7 @@ mod tests {
             gitignore_managed_links: false,
             instruction_files: HashMap::new(),
             claude_hooks: None,
+            source: None,
         };
 
         let merged = config.apply_defaults();
@@ -841,6 +899,7 @@ mod tests {
             gitignore_managed_links: false,
             instruction_files: HashMap::new(),
             claude_hooks: None,
+            source: None,
         };
 
         let merged = config.apply_defaults();
@@ -877,6 +936,7 @@ mod tests {
             gitignore_managed_links: false,
             instruction_files: HashMap::new(),
             claude_hooks: None,
+            source: None,
         };
 
         let merged = config.apply_defaults();
@@ -899,6 +959,7 @@ mod tests {
             use_claude_config: true,
             gitignore_managed_links: false,
             claude_hooks: None,
+            source: None,
         }
     }
 
@@ -1038,6 +1099,110 @@ mod tests {
             },
         );
         assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_source_with_no_hook_convention() {
+        let mut config = empty_config();
+        config.marketplaces.insert(
+            "m".to_string(),
+            MarketplaceConfig {
+                path: PathBuf::from("~/m"),
+                remote: "https://example.com/m.git".to_string(),
+                r#ref: "main".to_string(),
+            },
+        );
+        config.source = Some("junie".to_string());
+        let err = config.validate().unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("junie"), "got: {msg}");
+        assert!(msg.contains("hooks convention"), "got: {msg}");
+    }
+
+    #[test]
+    fn validate_rejects_source_not_implemented_as_reader_in_v1() {
+        let mut config = empty_config();
+        config.marketplaces.insert(
+            "m".to_string(),
+            MarketplaceConfig {
+                path: PathBuf::from("~/m"),
+                remote: "https://example.com/m.git".to_string(),
+                r#ref: "main".to_string(),
+            },
+        );
+        config.source = Some("cursor".to_string());
+        let err = config.validate().unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("cursor"), "got: {msg}");
+        assert!(msg.contains("not yet implemented"), "got: {msg}");
+    }
+
+    #[test]
+    fn validate_accepts_source_claude_code() {
+        let mut config = empty_config();
+        config.marketplaces.insert(
+            "m".to_string(),
+            MarketplaceConfig {
+                path: PathBuf::from("~/m"),
+                remote: "https://example.com/m.git".to_string(),
+                r#ref: "main".to_string(),
+            },
+        );
+        config.source = Some("claude-code".to_string());
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn hook_write_targets_excludes_source() {
+        let mut config = empty_config();
+        config.source = Some("cursor".to_string());
+        config.targets.insert(
+            "cursor".to_string(),
+            TargetConfig {
+                r#type: String::new(),
+                tools: vec![],
+                paths: HashMap::new(),
+                source_mappings: HashMap::new(),
+            },
+        );
+        config.targets.insert(
+            "codex".to_string(),
+            TargetConfig {
+                r#type: String::new(),
+                tools: vec![],
+                paths: HashMap::new(),
+                source_mappings: HashMap::new(),
+            },
+        );
+        let targets = config.hook_write_targets();
+        assert_eq!(targets, vec!["codex".to_string()]);
+    }
+
+    #[test]
+    fn hook_write_targets_filters_to_v1_writers() {
+        let mut config = empty_config();
+        config.source = Some("claude-code".to_string());
+        config.targets.insert(
+            "cursor".to_string(),
+            TargetConfig {
+                r#type: String::new(),
+                tools: vec![],
+                paths: HashMap::new(),
+                source_mappings: HashMap::new(),
+            },
+        );
+        config.targets.insert(
+            "gemini-cli".to_string(),
+            TargetConfig {
+                r#type: String::new(),
+                tools: vec![],
+                paths: HashMap::new(),
+                source_mappings: HashMap::new(),
+            },
+        );
+        let mut targets = config.hook_write_targets();
+        targets.sort();
+        assert_eq!(targets, vec!["cursor".to_string()]);
     }
 
     #[test]
