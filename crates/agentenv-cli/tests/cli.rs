@@ -74,6 +74,23 @@ fn init_writes_starter_config() {
 }
 
 #[test]
+fn init_adds_state_dir_to_gitignore() {
+    let project = TempDir::new().unwrap();
+
+    agentenv()
+        .args(["--project", project.path().to_str().unwrap(), "init"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(".agentenv/"));
+
+    let gitignore = fs::read_to_string(project.path().join(".gitignore")).unwrap();
+    assert!(
+        gitignore.contains(".agentenv/"),
+        "expected .agentenv/ in gitignore, got: {gitignore}"
+    );
+}
+
+#[test]
 fn init_refuses_to_overwrite_without_force() {
     let project = TempDir::new().unwrap();
     fs::write(project.path().join(".agentrc.yaml"), "version: 99\n").unwrap();

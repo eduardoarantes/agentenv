@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(gh run *)",
+      "Bash(git checkout *)",
+      "Bash(git pull *)",
+      "Bash(export PATH=\"$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin:$PATH\")",
+      "Bash(cargo build *)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "Bash(git tag *)",
+      "Bash(cargo check *)",
+      "Bash(cargo test *)",
+      "Bash(cargo fmt *)",
+      "Bash(cargo clippy *)",
+      "Bash(gh pr *)",
+      "Bash(gh release *)",
+      "Bash(grep -B 1 \"missing \\\\`gitignore\")",
+      "Bash(python3 -m json.tool)",
+      "Bash(curl -sLI \"https://api.eclipse.org/openvsx/profile/agreement\")",
+      "WebFetch(domain:github.com)",
+      "Bash(curl -sI \"https://open-vsx.org/user-settings/profile\")"
+    ]
+  }
+}

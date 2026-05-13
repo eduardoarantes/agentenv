@@ -168,6 +168,11 @@ The plugin list is empty so the first `agentenv sync` succeeds — open
 `.agentrc.yaml` and add plugins as you need them. See the
 [Configuration](#configuration) section below for the full shape.
 
+`init` also adds `.agentenv/` to the project's `.gitignore` (creating the file
+if needed). That directory holds `state.json`, a per-machine manifest of the
+links agentenv installed — it stores absolute paths and is regenerated on
+every `agentenv sync`, so it should not be committed.
+
 
 ### 2. Sync the environment
 
