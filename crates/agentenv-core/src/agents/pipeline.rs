@@ -204,6 +204,38 @@ mod tests {
         assert_eq!(parsed["model"].as_str(), Some("gpt-5"));
     }
 
+    fn write_codex_agent(project: &Path, name: &str, toml_body: &str) {
+        let dir = project.join(".codex/agents");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(format!("{name}.toml")), toml_body).unwrap();
+    }
+
+    #[test]
+    fn source_codex_reads_codex_agents_dir() {
+        let project = TempDir::new().unwrap();
+        write_codex_agent(
+            project.path(),
+            "rev",
+            "name = \"rev\"\ndescription = \"r\"\nprompt = \"body\"\n",
+        );
+
+        let mut config = base_config();
+        config.source = Some("codex".to_string());
+        // Cursor writer accepts any frontmatter and symlinks the source
+        // file directly.
+        config.targets.insert("cursor".to_string(), empty_target());
+
+        let report = run(&config, project.path(), &[], &State::default()).unwrap();
+        assert!(report.canonical_path.is_some());
+        // Cursor's symlink writer points the .md filename at the .toml
+        // source (we preserve the source name + suffix as the writer
+        // emits; the writer doesn't rewrite content).
+        let dest = project.path().join(".cursor/agents/rev.md");
+        assert!(dest.is_symlink(), "missing {}", dest.display());
+        let link = std::fs::read_link(&dest).unwrap();
+        assert!(link.ends_with("rev.toml"));
+    }
+
     #[test]
     fn source_cursor_reads_cursor_agents_dir() {
         let project = TempDir::new().unwrap();

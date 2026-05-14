@@ -15,6 +15,7 @@
 //! parser.
 
 pub mod claude_code;
+pub mod codex;
 pub mod cursor;
 
 use crate::error::{Error, Result};
@@ -33,6 +34,7 @@ pub fn read(source: &str, project_root: &Path) -> Result<Option<Canonical>> {
     match source {
         "claude-code" => claude_code::read(project_root),
         "cursor" => cursor::read(project_root),
+        "codex" => codex::read(project_root),
         other => Err(Error::Config(format!(
             "hooks source `{other}` is not implemented in this version"
         ))),

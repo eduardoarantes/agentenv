@@ -379,7 +379,8 @@ content yourself or set `source:` to a different target.
 | --- | --- | --- |
 | Read (source) | `claude-code` | ✅ implemented |
 | Read (source) | `cursor` | ✅ implemented (parses `.cursor/hooks.json` claude-shape) |
-| Read (source) | `codex`, `copilot` | rejected at config validation with a clear "not yet implemented" error |
+| Read (source) | `codex` | ✅ implemented (parses top-level `notify` in `~/.codex/config.toml`) |
+| Read (source) | `copilot` | rejected at config validation with a clear "not yet implemented" error |
 | Write | `cursor` | ✅ implemented |
 | Write | `codex` | ✅ implemented |
 | Write | `copilot` | deferred |

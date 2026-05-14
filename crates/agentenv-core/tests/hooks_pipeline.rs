@@ -311,6 +311,59 @@ fn source_cursor_reads_cursor_hooks_json_and_renders_codex() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn source_codex_reads_user_notify_and_renders_cursor() {
+    // Seed a user-authored `~/.codex/config.toml` with a top-level
+    // `notify` and a configured `cursor` target. The pipeline should
+    // produce one canonical Stop hook and render it into `.cursor/hooks.json`.
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let home = TempDir::new().unwrap();
+    let saved = std::env::var_os("HOME");
+    std::env::set_var("HOME", home.path());
+
+    let codex_dir = home.path().join(".codex");
+    std::fs::create_dir_all(&codex_dir).unwrap();
+    std::fs::write(
+        codex_dir.join("config.toml"),
+        "model = \"o4-mini\"\nnotify = [\"bash\", \"scripts/notify.sh\"]\n",
+    )
+    .unwrap();
+
+    let project = TempDir::new().unwrap();
+    let mut config = base_config();
+    config.source = Some("codex".to_string());
+    config.targets.insert("cursor".to_string(), empty_target());
+
+    let report = pipeline::run(&config, project.path()).expect("pipeline succeeds");
+
+    let canonical = canonical_io::read(project.path()).unwrap().unwrap();
+    assert_eq!(canonical.source, "codex");
+    assert_eq!(canonical.hooks.len(), 1);
+
+    let cursor_dest = cursor_writer::destination(project.path());
+    assert!(cursor_dest.exists());
+    let body: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&cursor_dest).unwrap()).unwrap();
+    assert!(body["hooks"]["Stop"].is_array());
+    let cmd = body["hooks"]["Stop"][0]["hooks"][0]["command"]
+        .as_str()
+        .unwrap_or("");
+    assert_eq!(cmd, "bash scripts/notify.sh");
+
+    // The pipeline must NOT have warned about "no v1 hook write target".
+    assert!(
+        !report.warnings.iter().any(|w| w.contains("no v1 hook")),
+        "warnings: {:?}",
+        report.warnings
+    );
+
+    match saved {
+        Some(v) => std::env::set_var("HOME", v),
+        None => std::env::remove_var("HOME"),
+    }
+}
+
 #[test]
 fn source_cursor_skips_cursor_writer() {
     // `source: cursor` + `targets: {cursor: {}}` must not rewrite the

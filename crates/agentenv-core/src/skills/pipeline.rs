@@ -250,4 +250,20 @@ mod tests {
         assert!(project.path().join(".agents/skills/hello").is_symlink());
         assert_eq!(report.state_links.len(), 1);
     }
+
+    #[test]
+    fn source_codex_reads_dot_agents_skills_dir() {
+        let project = TempDir::new().unwrap();
+        // Codex's project-local source root is the cross-tool alias.
+        write_skill_under(project.path(), ".agents/skills", "hello");
+
+        let mut config = base_config();
+        config.source = Some("codex".to_string());
+        config.targets.insert("cursor".to_string(), empty_target());
+
+        let report = run(&config, project.path(), &[], &State::default()).unwrap();
+        assert!(report.canonical_path.is_some());
+        assert!(project.path().join(".cursor/skills/hello").is_symlink());
+        assert_eq!(report.state_links.len(), 1);
+    }
 }

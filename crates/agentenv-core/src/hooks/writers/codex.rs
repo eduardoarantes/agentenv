@@ -315,19 +315,18 @@ mod tests {
         super::write(canonical, project)
     }
 
-    /// Cargo runs tests in parallel; mutating `$HOME` is process-global, so
-    /// we serialize every codex test that touches it through this mutex.
-    /// (Unix-only — on Windows `dirs::home_dir()` reads `%USERPROFILE%`.)
-    #[cfg(unix)]
-    static HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     /// Run with $HOME pointed at a temp dir for isolation. Returns the home
     /// path so callers can read the config back.
+    ///
+    /// Serializes against [`crate::hooks::HOME_LOCK`] — see its rustdoc for
+    /// why we cannot use per-module locks.
     #[cfg(unix)]
     fn with_isolated_home<F: FnOnce(&Path) -> Result<WriteReport>>(
         f: F,
     ) -> (Result<WriteReport>, TempDir) {
-        let _guard = HOME_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _guard = crate::hooks::HOME_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let home = TempDir::new().unwrap();
         let saved = std::env::var_os("HOME");
         std::env::set_var("HOME", home.path());

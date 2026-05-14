@@ -11,6 +11,7 @@
 //! reader implements its own walk rather than calling the helper here.
 
 pub mod claude_code;
+pub mod codex;
 pub mod cursor;
 
 use crate::agents::types::{Canonical, CanonicalAgent};
@@ -27,6 +28,7 @@ pub fn read(source: &str, roots: &[&Path]) -> Result<Option<Canonical>> {
     match source {
         "claude-code" => claude_code::read(roots),
         "cursor" => cursor::read(roots),
+        "codex" => codex::read(roots),
         other => Err(Error::Config(format!(
             "agents source `{other}` is not implemented in this version"
         ))),
@@ -42,6 +44,7 @@ pub fn project_source_dir(source: &str, project_root: &Path) -> Option<PathBuf> 
     let rel = match source {
         "claude-code" => ".claude/agents",
         "cursor" => ".cursor/agents",
+        "codex" => ".codex/agents",
         _ => return None,
     };
     Some(project_root.join(rel))
