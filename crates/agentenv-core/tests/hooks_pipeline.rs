@@ -407,8 +407,11 @@ fn source_cursor_skips_cursor_writer() {
     config.source = Some("cursor".to_string());
     // Listing the source target is rejected by Config::validate; the
     // pipeline-level filter (Config::hook_write_targets) also drops it.
-    // We assert the filter directly here — the validation case is covered
-    // in config.rs.
+    // Insert `cursor` into `targets` so the filter at config.rs:357-358
+    // actually has something to exclude — otherwise the assertion would
+    // be trivially true. The validation case (source-in-targets rejected
+    // at validate time) is covered separately in config.rs.
+    config.targets.insert("cursor".to_string(), empty_target());
     assert!(config.hook_write_targets().is_empty());
 
     let report = pipeline::run(&config, project.path()).unwrap();
