@@ -17,6 +17,7 @@ pub mod hooks;
 pub mod init;
 pub mod loader;
 pub mod marketplace;
+pub mod pipeline_common;
 pub mod plugin;
 pub mod resolver;
 pub mod skills;

@@ -12,6 +12,7 @@
 
 use crate::config::Config;
 use crate::error::Result;
+use crate::pipeline_common::configured_write_targets;
 use crate::resolver::ResolvedPlugin;
 use crate::skills::{canonical_io, readers, writers};
 use crate::state::{State, StateLink};
@@ -64,7 +65,7 @@ pub fn run(
     let canonical_path = canonical_io::write(project_root, &canonical)?;
     report.canonical_path = Some(canonical_path);
 
-    let write_targets = configured_write_targets(config, source);
+    let write_targets = configured_write_targets(config, source, writers::write_targets());
     for target in write_targets {
         let outcome = writers::write(&target, &canonical, project_root, old_state)?;
         report.state_links.extend(outcome.state_links);
@@ -72,21 +73,6 @@ pub fn run(
     }
 
     Ok(report)
-}
-
-/// Names of every configured target that this module knows how to write,
-/// excluding `source` (which is always read-only).
-fn configured_write_targets(config: &Config, source: &str) -> Vec<String> {
-    let known: std::collections::HashSet<&str> = writers::write_targets().iter().copied().collect();
-    let mut out: Vec<String> = config
-        .targets
-        .keys()
-        .filter(|name| known.contains(name.as_str()))
-        .filter(|name| name.as_str() != source)
-        .cloned()
-        .collect();
-    out.sort(); // deterministic write order across runs
-    out
 }
 
 #[cfg(test)]
@@ -213,7 +199,7 @@ mod tests {
         // keep this test focused on target filtering, point at claude-code:
         config.source = Some("claude-code".to_string());
         config.targets.insert("cursor".to_string(), empty_target());
-        let targets = configured_write_targets(&config, "cursor");
+        let targets = configured_write_targets(&config, "cursor", writers::write_targets());
         assert!(targets.iter().all(|t| t != "cursor"));
     }
 
