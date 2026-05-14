@@ -124,10 +124,10 @@ fn install_symlinks(
             continue;
         }
         let dest = dest_root.join(format!("{}{filename_suffix}", agent.name));
-        match check_conflict(&dest, &managed) {
-            Ok(true) => SymlinkManager::remove(&dest)?,
-            Ok(false) => {},
-            Err(reason) => {
+        match check_conflict(&dest, &managed)? {
+            ConflictDecision::ManagedReplace => SymlinkManager::remove(&dest)?,
+            ConflictDecision::Fresh => {},
+            ConflictDecision::UserOwned(reason) => {
                 outcome.report.drops.push(reason);
                 continue;
             },
@@ -162,27 +162,48 @@ fn skip_all(canonical: &Canonical, target_name: &str, reason: &str) -> WriterOut
     outcome
 }
 
-/// Classify a destination path — see [`crate::skills::writers`] for the
-/// same logic applied to skills.
-fn check_conflict(dest: &PathBuf, managed: &HashSet<&Path>) -> std::result::Result<bool, String> {
+/// Outcome of inspecting a destination path before writing.
+///
+/// Same contract as [`crate::skills::writers::ConflictDecision`]: stat
+/// IO errors propagate as `Error::Io` rather than being silenced into a
+/// soft drop. Only legitimate user-authored content at the destination
+/// yields a [`Self::UserOwned`] warning.
+#[derive(Debug)]
+enum ConflictDecision {
+    /// Destination does not exist; safe to create fresh.
+    Fresh,
+    /// Destination is an agentenv-managed symlink; safe to remove and
+    /// recreate (caller does so).
+    ManagedReplace,
+    /// Destination holds a user file or foreign symlink — skip this
+    /// agent with a warning, but continue the rest of the run.
+    UserOwned(String),
+}
+
+fn check_conflict(dest: &PathBuf, managed: &HashSet<&Path>) -> Result<ConflictDecision> {
     let meta = match fs::symlink_metadata(dest) {
         Ok(m) => m,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(err) => return Err(format!("cannot stat {}: {err}", dest.display())),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(ConflictDecision::Fresh);
+        },
+        // Anything other than NotFound is a real IO failure — surface it
+        // up so the user sees a clear non-zero exit. See the parallel
+        // doc comment on the skills version of this enum for rationale.
+        Err(err) => return Err(Error::Io(err)),
     };
     if managed.contains(dest.as_path()) {
-        return Ok(true);
+        return Ok(ConflictDecision::ManagedReplace);
     }
     if meta.file_type().is_symlink() {
-        return Err(format!(
+        return Ok(ConflictDecision::UserOwned(format!(
             "{}: existing symlink is not agentenv-managed — refusing to overwrite",
             dest.display()
-        ));
+        )));
     }
-    Err(format!(
+    Ok(ConflictDecision::UserOwned(format!(
         "{}: a real file already exists — refusing to overwrite",
         dest.display()
-    ))
+    )))
 }
 
 #[cfg(test)]
