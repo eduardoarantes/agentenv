@@ -72,8 +72,18 @@ fn config_path() -> Result<PathBuf> {
 
 /// Render the Codex `notify = [...]` array into a single shell command
 /// string. Codex's docs treat the array as a `bash -c`–style invocation
-/// (program plus args), so we join with spaces to match how the writer
-/// produced it.
+/// (program plus args).
+///
+/// - A `toml::Value::String` is returned unchanged — the user has already
+///   chosen a single shell-string representation.
+/// - A `toml::Value::Array` is joined with spaces. Each element that
+///   contains whitespace or shell metacharacters is POSIX single-quoted
+///   so element boundaries survive the join: `["bash", "-c", "echo hi
+///   there"]` becomes `bash -c 'echo hi there'` instead of the ambiguous
+///   `bash -c echo hi there`. Elements with no such characters are
+///   emitted unquoted for cleaner output.
+/// - Any other value (or an array containing non-string elements) yields
+///   `None`.
 fn render_notify_command(notify: &toml::Value) -> Option<String> {
     match notify {
         toml::Value::String(s) => Some(s.clone()),
@@ -81,12 +91,72 @@ fn render_notify_command(notify: &toml::Value) -> Option<String> {
             let mut parts: Vec<String> = Vec::with_capacity(items.len());
             for item in items {
                 let s = item.as_str()?;
-                parts.push(s.to_string());
+                parts.push(shell_quote_if_needed(s));
             }
             Some(parts.join(" "))
         },
         _ => None,
     }
+}
+
+/// Return `s` unchanged if it contains no whitespace or shell
+/// metacharacters; otherwise wrap it in POSIX single quotes with any
+/// literal `'` escaped as `'\''`.
+fn shell_quote_if_needed(s: &str) -> String {
+    if s.is_empty() || s.chars().any(needs_quoting) {
+        shell_single_quote(s)
+    } else {
+        s.to_string()
+    }
+}
+
+/// Conservative set of characters that force POSIX shell quoting:
+/// whitespace plus any byte the shell treats specially.
+fn needs_quoting(ch: char) -> bool {
+    matches!(
+        ch,
+        ' ' | '\t'
+            | '\n'
+            | '"'
+            | '\''
+            | '\\'
+            | '$'
+            | '`'
+            | '|'
+            | '&'
+            | ';'
+            | '<'
+            | '>'
+            | '('
+            | ')'
+            | '{'
+            | '}'
+            | '*'
+            | '?'
+            | '['
+            | ']'
+            | '~'
+            | '#'
+            | '='
+    )
+}
+
+/// Wrap `s` in single quotes safely for inclusion in a POSIX shell
+/// command. Mirrors the helper of the same name in
+/// [`super::super::writers::codex`]; duplicated here to avoid promoting a
+/// trivial private utility into a cross-module dependency.
+fn shell_single_quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('\'');
+    for ch in s.chars() {
+        if ch == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(ch);
+        }
+    }
+    out.push('\'');
+    out
 }
 
 /// Strip the agentenv-managed sentinel block from `text`. Mirrors the
@@ -240,6 +310,38 @@ mod tests {
         let canonical = result.unwrap().unwrap();
         let Action::Command { command, .. } = &canonical.hooks[0].action;
         assert_eq!(command, "my-notify");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn quotes_array_elements_with_whitespace_or_metachars() {
+        // Without quoting, a user-authored `notify = ["bash", "-c",
+        // "echo hello world"]` would render as `bash -c echo hello
+        // world` — the boundary between the third element and the rest
+        // is lost. With POSIX single-quoting, the boundary survives.
+        let project = TempDir::new().unwrap();
+        let (result, _home) = with_isolated_home(|home| {
+            seed_config(home, "notify = [\"bash\", \"-c\", \"echo hello world\"]\n");
+            read(project.path())
+        });
+        let canonical = result.unwrap().unwrap();
+        let Action::Command { command, .. } = &canonical.hooks[0].action;
+        assert_eq!(command, "bash -c 'echo hello world'");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn quotes_array_element_containing_single_quote() {
+        // Literal single quotes inside an element must be escaped as
+        // `'\''` so the resulting shell string still parses as one arg.
+        let project = TempDir::new().unwrap();
+        let (result, _home) = with_isolated_home(|home| {
+            seed_config(home, "notify = [\"bash\", \"-c\", \"echo it's fine\"]\n");
+            read(project.path())
+        });
+        let canonical = result.unwrap().unwrap();
+        let Action::Command { command, .. } = &canonical.hooks[0].action;
+        assert_eq!(command, "bash -c 'echo it'\\''s fine'");
     }
 
     #[cfg(unix)]
