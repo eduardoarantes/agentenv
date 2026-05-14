@@ -148,6 +148,101 @@ Test with various target configurations in `.agentrc.yaml`
 
 ---
 
+## Cross-platform conventions (CI runs Linux + macOS + Windows)
+
+CI's `Test Suite (windows-latest, stable)` matrix entry catches Windows-only
+regressions late. The pitfalls below have all bitten this repo at least
+once — internalize them before writing new filesystem code or tests.
+
+### 1. `std::os::unix::fs::symlink` does not compile on Windows
+Reach for it in test setup ("seed a foreign / stale symlink so the writer's
+detection logic has something to detect") and the entire `agentenv-core`
+test binary fails to compile, taking the Windows job with it.
+
+- **Production code:** use `SymlinkManager::create_symlink`
+  (`crates/agentenv-core/src/symlink.rs`). It already dispatches to
+  `std::os::unix::fs::symlink` on Unix and `std::os::windows::fs::symlink_dir`
+  on Windows under the appropriate `cfg`.
+- **Tests:** gate the whole `#[test]` function with `#[cfg(unix)]` — the
+  established pattern in `crates/agentenv-core/src/hooks/writers/codex.rs`
+  (nearly every test there carries the attribute). Production code reachable
+  on Windows must not be the thing being skipped; only test scaffolding that
+  needs to *manually* place a Unix symlink before invoking the writer
+  belongs behind `#[cfg(unix)]`.
+
+### 2. `symlink_dir` is the only Windows symlink primitive we use
+`SymlinkManager::create_symlink` calls `std::os::windows::fs::symlink_dir`
+unconditionally on Windows. That's correct for skills (which ARE
+directories), but it's a known sharp edge when symlinking individual files
+on Windows (e.g. an agent `.md` file). If you need file symlinks on
+Windows, extend `SymlinkManager` to choose `symlink_file` vs `symlink_dir`
+based on the source's `file_type()` rather than guessing inline. Don't
+sprinkle `std::os::windows::fs::symlink_file` across callers.
+
+Windows also requires either Administrator privileges or **Developer Mode**
+to create symlinks. GitHub's `windows-latest` runner has Developer Mode on,
+but local Windows machines may not — surfacing a clearer error in that
+case is welcome.
+
+### 3. Never serialize OS-native path separators into portable artifacts
+Canonical YAML under `<project>/.agentenv/<capability>.canonical.yaml` is
+meant to round-trip across machines: a project synced on Windows must
+produce a canonical that's bit-for-bit identical to the same project
+synced on macOS or Linux (modulo the `source_dir` / `source_file` fields,
+which are `#[serde(skip)]`). Any path field that IS serialized must use
+forward slashes regardless of the host OS.
+
+`Path::strip_prefix` returns OS-native components (`scripts\run.sh` on
+Windows), so the obvious code is wrong:
+
+```rust
+// WRONG on Windows — emits backslashes into the canonical
+let relative = path.strip_prefix(root)?.to_path_buf();
+```
+
+Normalize at construction time by joining the components with `/`:
+
+```rust
+// Right — portable canonical regardless of OS.
+let relative: String = path
+    .strip_prefix(root)?
+    .components()
+    .filter_map(|c| c.as_os_str().to_str())
+    .collect::<Vec<_>>()
+    .join("/");
+let relative_buf = std::path::PathBuf::from(relative);
+```
+
+Tests that compare these paths must use forward-slash literals
+(`"scripts/run.sh"`, never `"scripts\\run.sh"`) and run on every OS —
+don't paper over the bug with `#[cfg(unix)]`.
+
+Path fields meant only for the local sync run (e.g. `CanonicalSkill.source_dir`
+or `CanonicalAgent.source_file`) should be marked `#[serde(skip)]` so they
+stay environment-local and never reach the cross-platform canonical.
+
+### 4. Don't rely on git's default line-ending munging
+The marketplace clone passes `-c core.autocrlf=false` and persists that
+setting so refetches keep LF intact (see
+[`crates/agentenv-core/src/marketplace.rs`](crates/agentenv-core/src/marketplace.rs:214)
+and the runbook in CONTRIBUTING.md). When you add new git operations,
+preserve that flag explicitly — a future commit that drops it would silently
+corrupt skill scripts and hook command strings on Windows.
+
+### 5. Treat Windows CI as a hard gate
+- Run `cargo test --all` locally before pushing. If you have a Windows
+  VM/box, run it there too — but at minimum, scan every new test for the
+  three checklist items above (Unix symlinks, Windows `symlink_dir` for
+  file targets, path-separator string comparisons).
+- A Windows-only failure means the `Test Suite (windows-latest, stable)`
+  job in the PR is red and the PR is **not** mergeable until fixed —
+  even if Linux and macOS are green. Don't merge around it.
+
+When in doubt, ask: *does this code path appear in a Windows CI failure?*
+If it does or could, write the cross-platform version first.
+
+---
+
 ## Related Files
 
 - `.agentrc.example.yaml` - Example configuration with target definitions

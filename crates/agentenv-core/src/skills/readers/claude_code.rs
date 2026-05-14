@@ -118,14 +118,21 @@ fn walk_sidecars(root: &Path, current: &Path, out: &mut Vec<SidecarFile>) -> Res
         }
         let relative = path
             .strip_prefix(root)
-            .map_err(|err| Error::Config(format!("sidecar path {}: {err}", path.display())))?
-            .to_path_buf();
+            .map_err(|err| Error::Config(format!("sidecar path {}: {err}", path.display())))?;
         if relative.as_os_str() == SKILL_FILENAME {
             continue;
         }
-        let kind = SidecarKind::from_relative_path(&relative);
+        // Canonical YAML must be portable across OSes. Join components with
+        // `/` so Windows and Unix produce identical canonicals.
+        let relative_str: String = relative
+            .components()
+            .filter_map(|c| c.as_os_str().to_str())
+            .collect::<Vec<_>>()
+            .join("/");
+        let relative_buf = std::path::PathBuf::from(relative_str);
+        let kind = SidecarKind::from_relative_path(&relative_buf);
         out.push(SidecarFile {
-            relative_path: relative,
+            relative_path: relative_buf,
             kind,
         });
     }
