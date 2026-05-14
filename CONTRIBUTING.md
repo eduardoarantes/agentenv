@@ -343,6 +343,17 @@ git commit -m "docs: document marketplace path resolution"
 
 ---
 
+## Claude Code skills
+
+This repo ships repo-local [Claude Code](https://claude.com/claude-code) skills under `.claude/skills/` that automate the review-and-ship loop. They're optional — if you don't use Claude Code, the equivalent manual flow is `cargo fmt && cargo clippy && cargo test && git push && gh pr create`.
+
+- **`/review-and-fix`** — runs `/review` on the current branch, writes findings to a tracker file at `.agentenv/review-<timestamp>.md`, asks you which items to fix, and applies each fix in an isolated sub-agent (one commit per item). Use when you want to drive a review through to applied commits without context bleeding between items.
+- **`/ship-changes`** — audits the working tree for missing documentation updates, then commits, pushes, and opens a PR. Use when wrapping a tested working state into a published PR.
+
+Tracker files written by `/review-and-fix` land in `.agentenv/`, which is gitignored.
+
+---
+
 ## Pull request guidelines
 
 Before opening a PR:
