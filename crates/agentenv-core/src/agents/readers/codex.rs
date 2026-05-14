@@ -28,49 +28,12 @@ const NAME_SUFFIX: &str = ".toml";
 
 /// Build the canonical from a set of agent roots.
 ///
-/// Returns `Ok(None)` when no agent file was found across any root.
+/// Returns `Ok(None)` when no agent file was found across any root. The
+/// directory-walk semantics (hidden-skip, suffix-strip, dedupe, sort) are
+/// shared with the Markdown readers via [`super::parse_agents_by_suffix`];
+/// this reader only contributes the TOML per-file parser.
 pub fn read(roots: &[&Path]) -> Result<Option<Canonical>> {
-    let mut agents: Vec<CanonicalAgent> = Vec::new();
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-
-    for root in roots {
-        if !root.is_dir() {
-            continue;
-        }
-        let mut entries: Vec<fs::DirEntry> = fs::read_dir(root)?.collect::<std::io::Result<_>>()?;
-        entries.sort_by_key(|e| e.file_name());
-        for entry in entries {
-            let file_name = entry.file_name();
-            let file_str = match file_name.to_str() {
-                Some(s) if !s.starts_with('.') => s,
-                _ => continue,
-            };
-            let path = entry.path();
-            if !entry.file_type()?.is_file() {
-                continue;
-            }
-            let Some(stem) = file_str.strip_suffix(NAME_SUFFIX) else {
-                continue;
-            };
-            if stem.is_empty() {
-                continue;
-            }
-            let name = stem.to_string();
-            if !seen.insert(name.clone()) {
-                continue;
-            }
-            agents.push(parse_agent(&name, &path)?);
-        }
-    }
-
-    if agents.is_empty() {
-        return Ok(None);
-    }
-    agents.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(Some(Canonical {
-        source: SOURCE_NAME.to_string(),
-        agents,
-    }))
+    super::parse_agents_by_suffix(SOURCE_NAME, roots, NAME_SUFFIX, parse_agent)
 }
 
 fn parse_agent(name: &str, file: &Path) -> Result<CanonicalAgent> {

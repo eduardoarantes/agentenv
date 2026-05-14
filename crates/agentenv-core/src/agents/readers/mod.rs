@@ -7,8 +7,12 @@
 //! are thin wrappers that hand the shared walker a different
 //! `source_name`, root list, and `name_suffix`.
 //!
-//! Codex agents use TOML, not Markdown — when codex is the source, its
-//! reader implements its own walk rather than calling the helper here.
+//! Codex agents use TOML, not Markdown — but the directory-walk shape is
+//! the same (iterate roots, skip hidden + non-files, strip a name suffix,
+//! dedupe by name, sort). The shared [`parse_agents_by_suffix`] helper
+//! takes a per-file parser callback so codex passes its TOML parser and
+//! the Markdown wrappers pass the YAML-frontmatter parser. Only the
+//! per-file body differs between sources.
 
 pub mod claude_code;
 pub mod codex;
@@ -53,24 +57,29 @@ pub fn project_source_dir(source: &str, project_root: &Path) -> Option<PathBuf> 
     Some(project_root.join(rel))
 }
 
-/// Walk every root for files ending in `name_suffix` (e.g. `".md"` for
-/// Claude / Cursor / Gemini / Junie, `".agent.md"` for Copilot) and produce
-/// a canonical artifact tagged with `source_name`.
+/// Walk every root for files ending in `name_suffix` and produce a
+/// canonical artifact tagged with `source_name`, parsing each file's
+/// contents through the caller-supplied `parse_one`.
 ///
-/// Source-agnostic helper used by every reader whose native agent layout is
-/// "one Markdown file per agent with YAML frontmatter". Each file's name
-/// (minus `name_suffix`) becomes the canonical agent name. Roots are
-/// scanned in order; name collisions resolve first-root-wins. Hidden
-/// entries, files without the expected suffix, and subdirectories are
-/// skipped silently.
-pub(super) fn parse_markdown_agents(
+/// Centralizes the directory-walk semantics shared by every per-file agent
+/// source (Markdown + YAML frontmatter for claude-code/cursor/copilot/…,
+/// TOML for codex): iterate roots in order, skip hidden entries, skip
+/// non-files, require the configured `name_suffix`, dedupe by name with
+/// first-root-wins, and emit a sorted [`Canonical`]. Only the per-file
+/// parser (e.g. YAML-frontmatter split vs TOML deserialize) varies between
+/// callers.
+pub(super) fn parse_agents_by_suffix<F>(
     source_name: &str,
     roots: &[&Path],
     name_suffix: &str,
-) -> Result<Option<Canonical>> {
+    parse_one: F,
+) -> Result<Option<Canonical>>
+where
+    F: Fn(&str, &Path) -> Result<CanonicalAgent>,
+{
     debug_assert!(
         name_suffix.starts_with('.') && !name_suffix.is_empty(),
-        "name_suffix must look like \".md\" or \".agent.md\""
+        "name_suffix must look like \".md\" or \".toml\""
     );
 
     let mut agents: Vec<CanonicalAgent> = Vec::new();
@@ -102,7 +111,7 @@ pub(super) fn parse_markdown_agents(
             if !seen.insert(name.clone()) {
                 continue;
             }
-            agents.push(parse_agent(&name, &path)?);
+            agents.push(parse_one(&name, &path)?);
         }
     }
 
@@ -114,6 +123,21 @@ pub(super) fn parse_markdown_agents(
         source: source_name.to_string(),
         agents,
     }))
+}
+
+/// Walk every root for files ending in `name_suffix` (e.g. `".md"` for
+/// Claude / Cursor / Gemini / Junie, `".agent.md"` for Copilot) and produce
+/// a canonical artifact tagged with `source_name`.
+///
+/// Thin wrapper over [`parse_agents_by_suffix`] that fixes the per-file
+/// parser to YAML-frontmatter + Markdown body. Codex (TOML) instead calls
+/// `parse_agents_by_suffix` directly with its own TOML parser.
+pub(super) fn parse_markdown_agents(
+    source_name: &str,
+    roots: &[&Path],
+    name_suffix: &str,
+) -> Result<Option<Canonical>> {
+    parse_agents_by_suffix(source_name, roots, name_suffix, parse_agent)
 }
 
 fn parse_agent(name: &str, file: &Path) -> Result<CanonicalAgent> {
