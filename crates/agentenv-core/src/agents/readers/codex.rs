@@ -85,11 +85,19 @@ fn parse_agent(name: &str, file: &Path) -> Result<CanonicalAgent> {
         ))
     })?;
 
-    let body = table
-        .get("prompt")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_string();
+    let body = match table.get("prompt") {
+        Some(value) => match value.as_str() {
+            Some(s) => s.to_string(),
+            None => {
+                return Err(Error::Config(format!(
+                    "codex agent at {}: `prompt` must be a string, got {}",
+                    file.display(),
+                    toml_type_name(value)
+                )));
+            },
+        },
+        None => String::new(),
+    };
 
     let mut frontmatter = serde_yaml::Mapping::new();
     for (key, value) in table {
@@ -106,6 +114,21 @@ fn parse_agent(name: &str, file: &Path) -> Result<CanonicalAgent> {
         body,
         source_file: file.to_path_buf(),
     })
+}
+
+/// Human-readable type tag for a TOML value, used in error messages so
+/// users can tell *why* a field was rejected (e.g. `prompt = 42` reports
+/// `integer`).
+fn toml_type_name(v: &toml::Value) -> &'static str {
+    match v {
+        toml::Value::String(_) => "string",
+        toml::Value::Integer(_) => "integer",
+        toml::Value::Float(_) => "float",
+        toml::Value::Boolean(_) => "boolean",
+        toml::Value::Array(_) => "array",
+        toml::Value::Table(_) => "table",
+        toml::Value::Datetime(_) => "datetime",
+    }
 }
 
 /// Translate a TOML value into the matching `serde_yaml::Value`. Lossless
@@ -257,5 +280,23 @@ Line 2.
         write_codex_agent(scratch.path(), "broken", "not = toml = at = all");
         let err = read(&[scratch.path()]).unwrap_err();
         assert!(err.to_string().contains("invalid codex agent"));
+    }
+
+    #[test]
+    fn non_string_prompt_is_a_config_error() {
+        // A `prompt = 42` (or any non-string) would previously be silently
+        // dropped — body emptied AND the integer omitted from frontmatter
+        // because the loop unconditionally skips the `prompt` key. The
+        // lossless contract requires we surface this as `Error::Config`
+        // instead of degrading to a useless empty agent.
+        let scratch = TempDir::new().unwrap();
+        write_codex_agent(scratch.path(), "bad", "name = \"bad\"\nprompt = 42\n");
+        let err = read(&[scratch.path()]).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("`prompt` must be a string"),
+            "expected prompt-type error, got: {msg}"
+        );
+        assert!(msg.contains("integer"), "expected type tag, got: {msg}");
     }
 }
