@@ -54,6 +54,21 @@ pub fn write_targets() -> &'static [&'static str] {
     ]
 }
 
+/// Per-target destination metadata for the passthrough-symlink writers
+/// (`(target_dir_rel, filename_suffix)`).
+///
+/// `codex` and `antigravity` are not in this table because they need
+/// real per-target logic (TOML materialization / skip-with-warning).
+fn symlink_target_meta(target: &str) -> Option<(&'static str, &'static str)> {
+    match target {
+        "cursor" => Some((".cursor/agents", ".md")),
+        "copilot" => Some((".github/agents", ".agent.md")),
+        "gemini-cli" => Some((".gemini/agents", ".md")),
+        "junie" => Some((".junie/agents", ".md")),
+        _ => None,
+    }
+}
+
 /// Dispatch to the right writer based on the target name.
 pub fn write(
     target: &str,
@@ -61,34 +76,14 @@ pub fn write(
     project_root: &Path,
     old_state: &State,
 ) -> Result<WriterOutcome> {
+    if let Some((dir, suffix)) = symlink_target_meta(target) {
+        return install_symlinks(canonical, project_root, dir, suffix, target, old_state);
+    }
     match target {
-        "cursor" => install_symlinks(canonical, project_root, ".cursor/agents", ".md", "cursor", old_state),
-        "copilot" => install_symlinks(
-            canonical,
-            project_root,
-            ".github/agents",
-            ".agent.md",
-            "copilot",
-            old_state,
-        ),
-        "gemini-cli" => install_symlinks(
-            canonical,
-            project_root,
-            ".gemini/agents",
-            ".md",
-            "gemini-cli",
-            old_state,
-        ),
-        "junie" => install_symlinks(
-            canonical,
-            project_root,
-            ".junie/agents",
-            ".md",
-            "junie",
-            old_state,
-        ),
         "codex" => codex::write(canonical, project_root, old_state),
-        "antigravity" => Ok(skip_all(canonical, "antigravity",
+        "antigravity" => Ok(skip_all(
+            canonical,
+            "antigravity",
             "antigravity uses a single repo-root `agents.md` file, not per-agent files — agent skipped",
         )),
         other => Err(Error::Config(format!(
@@ -111,6 +106,11 @@ fn install_symlinks(
     let managed: HashSet<&Path> = old_state.links.iter().map(|l| l.target.as_path()).collect();
 
     for agent in &canonical.agents {
+        // `source_file` is `#[serde(skip)]` — empty after deserializing from
+        // disk. Production sync always re-runs the reader before invoking
+        // writers (see `crate::agents::pipeline`), so this is only reachable
+        // from callers that hand us a canonical built without a reader
+        // (today: tests). Defensive guard.
         if agent.source_file.as_os_str().is_empty() {
             outcome.report.drops.push(format!(
                 "{target_name}: agent `{}` has no source_file captured — skipping",
@@ -119,10 +119,10 @@ fn install_symlinks(
             continue;
         }
         let dest = dest_root.join(format!("{}{filename_suffix}", agent.name));
-        match check_conflict(&dest, &managed) {
-            Ok(true) => SymlinkManager::remove(&dest)?,
-            Ok(false) => {},
-            Err(reason) => {
+        match check_conflict(&dest, &managed)? {
+            ConflictDecision::ManagedReplace => SymlinkManager::remove(&dest)?,
+            ConflictDecision::Fresh => {},
+            ConflictDecision::UserOwned(reason) => {
                 outcome.report.drops.push(reason);
                 continue;
             },
@@ -157,27 +157,48 @@ fn skip_all(canonical: &Canonical, target_name: &str, reason: &str) -> WriterOut
     outcome
 }
 
-/// Classify a destination path — see [`crate::skills::writers`] for the
-/// same logic applied to skills.
-fn check_conflict(dest: &PathBuf, managed: &HashSet<&Path>) -> std::result::Result<bool, String> {
+/// Outcome of inspecting a destination path before writing.
+///
+/// Same contract as [`crate::skills::writers::ConflictDecision`]: stat
+/// IO errors propagate as `Error::Io` rather than being silenced into a
+/// soft drop. Only legitimate user-authored content at the destination
+/// yields a [`Self::UserOwned`] warning.
+#[derive(Debug)]
+enum ConflictDecision {
+    /// Destination does not exist; safe to create fresh.
+    Fresh,
+    /// Destination is an agentenv-managed symlink; safe to remove and
+    /// recreate (caller does so).
+    ManagedReplace,
+    /// Destination holds a user file or foreign symlink — skip this
+    /// agent with a warning, but continue the rest of the run.
+    UserOwned(String),
+}
+
+fn check_conflict(dest: &PathBuf, managed: &HashSet<&Path>) -> Result<ConflictDecision> {
     let meta = match fs::symlink_metadata(dest) {
         Ok(m) => m,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(err) => return Err(format!("cannot stat {}: {err}", dest.display())),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(ConflictDecision::Fresh);
+        },
+        // Anything other than NotFound is a real IO failure — surface it
+        // up so the user sees a clear non-zero exit. See the parallel
+        // doc comment on the skills version of this enum for rationale.
+        Err(err) => return Err(Error::Io(err)),
     };
     if managed.contains(dest.as_path()) {
-        return Ok(true);
+        return Ok(ConflictDecision::ManagedReplace);
     }
     if meta.file_type().is_symlink() {
-        return Err(format!(
+        return Ok(ConflictDecision::UserOwned(format!(
             "{}: existing symlink is not agentenv-managed — refusing to overwrite",
             dest.display()
-        ));
+        )));
     }
-    Err(format!(
+    Ok(ConflictDecision::UserOwned(format!(
         "{}: a real file already exists — refusing to overwrite",
         dest.display()
-    ))
+    )))
 }
 
 #[cfg(test)]

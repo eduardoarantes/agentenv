@@ -88,7 +88,7 @@ fn resolves_plugins_from_local_marketplace() {
     let config = ConfigLoader::load_from_string(&config_yaml(
         temp.path(),
         "  - name: my-plugin",
-        "  claude-code: {}",
+        "  cursor: {}",
     ))
     .unwrap();
     let resolved = PluginResolver::resolve_all(&config, temp.path()).unwrap();
@@ -110,7 +110,7 @@ fn errors_when_selected_plugin_is_missing() {
     let config = ConfigLoader::load_from_string(&config_yaml(
         temp.path(),
         "  - name: missing-plugin",
-        "  claude-code: {}",
+        "  cursor: {}",
     ))
     .unwrap();
 
@@ -134,7 +134,7 @@ fn validates_explicit_plugin_version() {
     let ok_config = ConfigLoader::load_from_string(&config_yaml(
         temp.path(),
         "  - name: versioned-plugin\n    version: 2.0.0",
-        "  claude-code: {}",
+        "  cursor: {}",
     ))
     .unwrap();
     assert_eq!(
@@ -145,7 +145,7 @@ fn validates_explicit_plugin_version() {
     let bad_config = ConfigLoader::load_from_string(&config_yaml(
         temp.path(),
         "  - name: versioned-plugin\n    version: 1.0.0",
-        "  claude-code: {}",
+        "  cursor: {}",
     ))
     .unwrap();
     let err = PluginResolver::resolve_all(&bad_config, temp.path()).unwrap_err();
@@ -159,7 +159,7 @@ fn rejects_marketplace_without_index() {
     let config = ConfigLoader::load_from_string(&config_yaml(
         temp.path(),
         "  - name: anything",
-        "  claude-code: {}",
+        "  cursor: {}",
     ))
     .unwrap();
 
@@ -184,7 +184,7 @@ fn rejects_index_pointing_at_missing_source() {
     let config = ConfigLoader::load_from_string(&config_yaml(
         temp.path(),
         "  - name: ghost",
-        "  claude-code: {}",
+        "  cursor: {}",
     ))
     .unwrap();
 
@@ -208,7 +208,7 @@ fn capabilities_are_inferred_from_filesystem() {
     let config = ConfigLoader::load_from_string(&config_yaml(
         temp.path(),
         "  - name: commands-only",
-        "  claude-code: {}",
+        "  cursor: {}",
     ))
     .unwrap();
 

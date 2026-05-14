@@ -100,6 +100,11 @@ fn install_to_dir(
     let managed: HashSet<&Path> = old_state.links.iter().map(|l| l.target.as_path()).collect();
 
     for skill in &canonical.skills {
+        // `source_dir` is `#[serde(skip)]`, so it deserializes to an empty
+        // `PathBuf` from disk. Production sync always re-runs the reader
+        // before invoking writers (see `crate::skills::pipeline`), so this
+        // branch is only reachable when a caller hands us a canonical built
+        // without a reader (today: tests). Treat it as a defensive guard.
         if skill.source_dir.as_os_str().is_empty() {
             outcome.report.drops.push(format!(
                 "{target_name}: skill `{}` has no source_dir captured — skipping (likely an orphaned canonical entry)",
@@ -108,14 +113,14 @@ fn install_to_dir(
             continue;
         }
         let dest = dest_root.join(&skill.name);
-        match check_conflict(&dest, &managed) {
-            Ok(true) => {
+        match check_conflict(&dest, &managed)? {
+            ConflictDecision::ManagedReplace => {
                 // Agentenv-managed symlink at the destination — drop it
                 // before re-creating so a moved source repoints cleanly.
                 SymlinkManager::remove(&dest)?;
             },
-            Ok(false) => {},
-            Err(reason) => {
+            ConflictDecision::Fresh => {},
+            ConflictDecision::UserOwned(reason) => {
                 outcome.report.drops.push(reason);
                 continue;
             },
@@ -136,34 +141,50 @@ fn install_to_dir(
     Ok(outcome)
 }
 
-/// Classify a destination path.
+/// Outcome of inspecting a destination path before writing.
 ///
-/// Returns:
-/// - `Ok(false)` — destination does not exist; safe to create fresh.
-/// - `Ok(true)`  — destination is an agentenv-managed symlink; safe to
-///   remove and re-create (caller does so).
-/// - `Err(reason)` — destination holds a user file or foreign symlink;
-///   skipped with a warning.
-fn check_conflict(dest: &PathBuf, managed: &HashSet<&Path>) -> std::result::Result<bool, String> {
+/// IO failures while statting the destination (permission denied, etc.)
+/// do NOT fold into [`Self::UserOwned`] — they propagate as
+/// `Error::Io` from [`check_conflict`] so the run fails fast instead of
+/// degenerating into a confusing "warn: cannot stat …" + "succeeded"
+/// pair. Only legitimate "something a human authored is at the
+/// destination" cases become soft drops.
+#[derive(Debug)]
+enum ConflictDecision {
+    /// Destination does not exist; safe to create fresh.
+    Fresh,
+    /// Destination is an agentenv-managed symlink; safe to remove and
+    /// recreate (caller does so).
+    ManagedReplace,
+    /// Destination holds a user file or foreign symlink — skip this
+    /// item with a warning, but continue the rest of the run.
+    UserOwned(String),
+}
+
+fn check_conflict(dest: &PathBuf, managed: &HashSet<&Path>) -> Result<ConflictDecision> {
     let meta = match fs::symlink_metadata(dest) {
         Ok(m) => m,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(err) => return Err(format!("cannot stat {}: {err}", dest.display())),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(ConflictDecision::Fresh);
+        },
+        // Any other IO error is a real problem (permission, transient
+        // FS failure) — propagate so the user gets a clear non-zero
+        // exit instead of a soft-drop they can miss in the warn stream.
+        Err(err) => return Err(Error::Io(err)),
     };
-    let is_managed = managed.contains(dest.as_path());
-    if is_managed {
-        return Ok(true);
+    if managed.contains(dest.as_path()) {
+        return Ok(ConflictDecision::ManagedReplace);
     }
     if meta.file_type().is_symlink() {
-        return Err(format!(
+        return Ok(ConflictDecision::UserOwned(format!(
             "{}: existing symlink is not agentenv-managed — refusing to overwrite",
             dest.display()
-        ));
+        )));
     }
-    Err(format!(
+    Ok(ConflictDecision::UserOwned(format!(
         "{}: a real file/dir already exists — refusing to overwrite",
         dest.display()
-    ))
+    )))
 }
 
 #[cfg(test)]
@@ -308,6 +329,30 @@ mod tests {
         );
         assert_eq!(outcome.state_links.len(), 1);
         assert_eq!(fs::read_link(&dest).unwrap(), skill_dir);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn propagates_stat_io_error_instead_of_soft_dropping() {
+        // Make the parent of the would-be destination a regular file
+        // rather than a directory. `symlink_metadata` on the child path
+        // then fails with ENOTDIR — a real IO error that must surface
+        // as `Err`, not as a `WriteReport.drops` entry.
+        let project = TempDir::new().unwrap();
+        let source_root = project.path().join(".claude/skills");
+        let skill_dir = populate_source_skill(&source_root, "hello");
+        // `.cursor/skills` is a regular file instead of a directory.
+        fs::create_dir_all(project.path().join(".cursor")).unwrap();
+        fs::write(project.path().join(".cursor/skills"), "not a dir").unwrap();
+
+        let canonical = Canonical {
+            source: "claude-code".to_string(),
+            skills: vec![make_skill(&skill_dir, "hello")],
+        };
+        let err = write("cursor", &canonical, project.path(), &State::default()).unwrap_err();
+        // The real-deal failure path: surfaced as `Error::Io`, never as
+        // a string-formatted drop warning.
+        assert!(matches!(err, crate::error::Error::Io(_)), "got: {err:?}");
     }
 
     #[test]

@@ -38,6 +38,10 @@ pub fn write(
     let dest_root = project_root.join(TARGET_DIR);
 
     for agent in &canonical.agents {
+        // `source_file` is `#[serde(skip)]` — empty after deserializing from
+        // disk. Production sync always re-runs the reader before this, so
+        // we only hit this branch from callers that hand us a canonical
+        // built without a reader (today: tests). Defensive guard.
         if agent.source_file.as_os_str().is_empty() {
             outcome.report.drops.push(format!(
                 "codex: agent `{}` has no source_file captured — skipping",
@@ -66,25 +70,28 @@ pub fn write(
     Ok(outcome)
 }
 
-/// Build the TOML body for one canonical agent. Walks frontmatter once,
-/// emitting documented keys and pushing drop reasons for the rest. Body
-/// becomes `prompt = """…"""`.
+/// Build the TOML body for one canonical agent.
+///
+/// Walks the translatable allow-list, drop-reports any other frontmatter
+/// keys, and emits the body verbatim as the `prompt` field. We delegate
+/// every escape decision to `toml::to_string_pretty` — hand-rolling
+/// string escapes was bug-prone (bodies with `\`, trailing `"`, embedded
+/// `"""` all corrupted on round-trip), and the `toml` crate handles all
+/// of those correctly by construction.
 fn render(agent: &crate::agents::types::CanonicalAgent, report: &mut WriteReport) -> String {
-    use std::fmt::Write as _;
-
-    let mut out = String::new();
-    writeln!(out, "{SENTINEL}").unwrap();
+    let mut table = toml::map::Map::new();
 
     for key in TRANSLATABLE_KEYS {
         let key_val = serde_yaml::Value::String((*key).to_string());
         if let Some(v) = agent.frontmatter.get(&key_val) {
-            if let Some(rendered) = yaml_to_toml_scalar_or_array(v) {
-                writeln!(out, "{key} = {rendered}").unwrap();
-            } else {
-                report.drops.push(format!(
+            match yaml_to_toml_value(v) {
+                Some(toml_val) => {
+                    table.insert((*key).to_string(), toml_val);
+                },
+                None => report.drops.push(format!(
                     "codex: dropping `{}.{key}` — value type cannot be expressed in TOML",
                     agent.name
-                ));
+                )),
             }
         }
     }
@@ -102,59 +109,52 @@ fn render(agent: &crate::agents::types::CanonicalAgent, report: &mut WriteReport
         ));
     }
 
-    writeln!(out).unwrap();
-    write!(out, "prompt = {}", literal_string(&agent.body)).unwrap();
+    table.insert(
+        "prompt".to_string(),
+        toml::Value::String(agent.body.clone()),
+    );
+
+    // The table is built from in-memory primitives the toml crate accepts,
+    // so serialization cannot fail at runtime.
+    let body = toml::to_string_pretty(&toml::Value::Table(table))
+        .expect("toml serialization of in-memory table cannot fail");
+    let mut out = String::with_capacity(SENTINEL.len() + body.len() + 2);
+    out.push_str(SENTINEL);
     out.push('\n');
+    out.push_str(&body);
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
     out
 }
 
-/// Render a YAML scalar (or homogeneous string array) as a TOML value
-/// literal. Returns `None` for nested mappings, mixed-type arrays, or
-/// other shapes the documented Codex schema doesn't accept.
-fn yaml_to_toml_scalar_or_array(v: &serde_yaml::Value) -> Option<String> {
+/// Translate a YAML scalar (or homogeneous string array) into the
+/// matching `toml::Value`. Returns `None` for nested mappings, mixed-type
+/// arrays, or other shapes the documented Codex schema doesn't accept —
+/// caller turns that into a drop warning.
+fn yaml_to_toml_value(v: &serde_yaml::Value) -> Option<toml::Value> {
     match v {
-        serde_yaml::Value::String(s) => Some(toml_string_literal(s)),
-        serde_yaml::Value::Bool(b) => Some(b.to_string()),
-        serde_yaml::Value::Number(n) => Some(n.to_string()),
+        serde_yaml::Value::String(s) => Some(toml::Value::String(s.clone())),
+        serde_yaml::Value::Bool(b) => Some(toml::Value::Boolean(*b)),
+        serde_yaml::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Some(toml::Value::Integer(i))
+            } else {
+                n.as_f64().map(toml::Value::Float)
+            }
+        },
         serde_yaml::Value::Sequence(items) => {
-            let mut parts = Vec::with_capacity(items.len());
+            let mut out = Vec::with_capacity(items.len());
             for item in items {
                 let serde_yaml::Value::String(s) = item else {
                     return None;
                 };
-                parts.push(toml_string_literal(s));
+                out.push(toml::Value::String(s.clone()));
             }
-            Some(format!("[{}]", parts.join(", ")))
+            Some(toml::Value::Array(out))
         },
         _ => None,
     }
-}
-
-/// Inline TOML string literal — uses basic double-quoted form with simple
-/// escapes. Multi-line bodies use [`literal_string`] instead.
-fn toml_string_literal(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04X}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
-}
-
-/// Multi-line TOML literal — triple-quoted to preserve the body verbatim.
-/// Escapes any embedded `"""` to keep the file parseable.
-fn literal_string(body: &str) -> String {
-    let safe = body.replace("\"\"\"", "\"\"\\\"");
-    format!("\"\"\"\n{safe}\"\"\"")
 }
 
 /// Refuse to overwrite if the destination exists without the sentinel
@@ -232,19 +232,25 @@ mod tests {
         let dest = project.path().join(".codex/agents/rev.toml");
         let raw = fs::read_to_string(&dest).unwrap();
         assert!(raw.starts_with(SENTINEL));
-        assert!(raw.contains("name = \"rev\""));
-        assert!(raw.contains("description = \"Reviews PRs\""));
-        assert!(raw.contains("model = \"gpt-5\""));
-        assert!(raw.contains("tools = [\"Read\", \"Grep\"]"));
-        assert!(raw.contains("prompt = \"\"\""));
-        assert!(raw.contains("You are a reviewer."));
 
-        // Parses as valid TOML.
+        // Behavior — not implementation: the TOML must parse back and
+        // every field must round-trip with the value we asked to render.
+        // The exact escape form (basic vs. multi-line, inline vs. wrapped
+        // array) is left to `toml::to_string_pretty`.
         let parsed: toml::Value = toml::from_str(&raw).unwrap();
         assert_eq!(parsed["name"].as_str(), Some("rev"));
+        assert_eq!(parsed["description"].as_str(), Some("Reviews PRs"));
+        assert_eq!(parsed["model"].as_str(), Some("gpt-5"));
+        let tools: Vec<&str> = parsed["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(tools, vec!["Read", "Grep"]);
         assert_eq!(
-            parsed["prompt"].as_str().unwrap().trim(),
-            "You are a reviewer.\nLine 2."
+            parsed["prompt"].as_str().unwrap(),
+            "You are a reviewer.\nLine 2.\n"
         );
     }
 
@@ -338,6 +344,61 @@ mod tests {
         let raw = fs::read_to_string(project.path().join(".codex/agents/rev.toml")).unwrap();
         // `tools` line should not have made it through.
         assert!(!raw.contains("tools = "), "got: {raw}");
+    }
+
+    /// Round-trip the body of an agent through render → parse and assert
+    /// the parsed `prompt` value equals the original byte-for-byte.
+    /// Used by every "body content is preserved" test below.
+    fn assert_prompt_round_trips(body: &str) {
+        let project = TempDir::new().unwrap();
+        let src = project.path().join(".claude/agents/rev.md");
+        touch(&src);
+        let agent = agent_with_frontmatter("rev", "name: rev\ndescription: r", body, &src);
+        let canonical = Canonical {
+            source: "claude-code".to_string(),
+            agents: vec![agent],
+        };
+        write(&canonical, project.path(), &State::default()).unwrap();
+        let raw = fs::read_to_string(project.path().join(".codex/agents/rev.toml")).unwrap();
+        let parsed: toml::Value = toml::from_str(&raw).expect("rendered output must parse as TOML");
+        assert_eq!(
+            parsed["prompt"].as_str().unwrap(),
+            body,
+            "prompt round-trip mismatch — render+parse must yield the original body"
+        );
+    }
+
+    #[test]
+    fn body_with_backslash_round_trips() {
+        // The old hand-rolled triple-quoted writer used TOML basic
+        // strings, which treat `\` as an escape — bodies containing
+        // literal `\n`, `\\`, or Windows paths would get silently
+        // mangled on the round-trip.
+        assert_prompt_round_trips("line with literal backslash-n: \\n end\n");
+        assert_prompt_round_trips("double backslash: \\\\ end\n");
+    }
+
+    #[test]
+    fn body_ending_in_double_quote_round_trips() {
+        // Bodies ending in `"` would butt up against the closing `"""`
+        // delimiter under the old writer and produce ambiguous or
+        // invalid TOML. `toml::to_string_pretty` handles this case.
+        assert_prompt_round_trips("he said \"hello\"");
+        assert_prompt_round_trips("ends with two quotes: \"\"");
+    }
+
+    #[test]
+    fn body_containing_triple_quote_round_trips() {
+        // Embedded `"""` in the body would prematurely close the old
+        // writer's delimited string. Must survive intact now.
+        assert_prompt_round_trips("before \"\"\" after\n");
+    }
+
+    #[test]
+    fn body_with_windows_path_round_trips() {
+        // Common real-world content: Windows path. The old writer's
+        // un-escaped `\U` would get interpreted as a TOML unicode escape.
+        assert_prompt_round_trips("path: C:\\Users\\foo\\bar.txt\n");
     }
 
     #[test]
