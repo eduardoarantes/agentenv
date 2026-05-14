@@ -225,7 +225,7 @@ targets:
     }
 
     #[test]
-    fn test_load_from_file_drops_claude_code_target_when_source_is_claude_code() {
+    fn test_load_from_file_rejects_claude_code_target_when_source_is_claude_code() {
         use tempfile::TempDir;
         let project = TempDir::new().unwrap();
         let project_root = project.path();
@@ -253,13 +253,14 @@ targets:
         std::fs::write(project_root.join(".agentrc.yaml"), yaml).unwrap();
 
         let home = TempDir::new().unwrap();
-        let config =
+        // Previously the loader silently stripped `claude-code` from the
+        // targets map. We now reject the overlap explicitly so the user
+        // doesn't end up with a vanished config entry.
+        let err =
             ConfigLoader::load_from_file_with_home(project_root.join(".agentrc.yaml"), home.path())
-                .unwrap();
-        assert!(
-            !config.targets.contains_key("claude-code"),
-            "claude-code target should be dropped"
-        );
-        assert!(config.targets.contains_key("cursor"));
+                .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("claude-code"), "got: {msg}");
+        assert!(msg.contains("source"), "got: {msg}");
     }
 }

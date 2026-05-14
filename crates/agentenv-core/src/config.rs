@@ -260,6 +260,16 @@ impl Config {
                     KNOWN_TARGETS.join(", "),
                 )));
             }
+            // The source is always read-only — listing it again under
+            // `targets:` quietly does nothing (it's stripped during the
+            // Claude-import merge). Catch it here so the user sees the
+            // mistake instead of debugging a silently-vanished entry.
+            if Some(name.as_str()) == self.source.as_deref() {
+                return Err(Error::Config(format!(
+                    "target `{name}` is the same as `source:` — the source is read-only; \
+                     remove it from `targets:` (sync never writes back to the source target)"
+                )));
+            }
         }
 
         for plugin in &self.plugins {
@@ -304,6 +314,11 @@ impl Config {
     }
 
     /// Layer a `ClaudeConfigImport` onto this config.
+    ///
+    /// Does NOT strip a `claude-code` entry from `targets:` even though
+    /// it would be a no-op write target when `source: claude-code`.
+    /// `Config::validate` rejects that combination explicitly so the
+    /// user gets a clear diagnostic instead of a silent drop.
     pub fn merge_claude_import(&mut self, import: crate::claude_config::ClaudeConfigImport) {
         for (name, mp) in import.marketplaces {
             self.marketplaces.entry(name).or_insert(mp);
@@ -330,12 +345,6 @@ impl Config {
             if existing.insert(key) {
                 self.plugins.push(plugin);
             }
-        }
-
-        if self.targets.remove("claude-code").is_some() {
-            tracing::info!(
-                "claude-code target dropped from sync because `source: claude-code` treats Claude as the source"
-            );
         }
     }
 
@@ -504,7 +513,10 @@ mod tests {
     }
 
     #[test]
-    fn merge_claude_import_drops_claude_code_target() {
+    fn merge_claude_import_preserves_targets() {
+        // The merge no longer silently strips `claude-code` from targets —
+        // `Config::validate` rejects the overlap with `source:` explicitly
+        // so the user sees a diagnostic instead of a vanished entry.
         let mut config = base_config();
         config
             .targets
@@ -514,7 +526,23 @@ mod tests {
             .insert("cursor".to_string(), TargetConfig::default());
         let import = crate::claude_config::ClaudeConfigImport::default();
         config.merge_claude_import(import);
-        assert!(!config.targets.contains_key("claude-code"));
+        assert!(config.targets.contains_key("claude-code"));
         assert!(config.targets.contains_key("cursor"));
+    }
+
+    #[test]
+    fn validate_rejects_source_appearing_as_target() {
+        let mut config = base_config();
+        config.source = Some("claude-code".to_string());
+        config
+            .targets
+            .insert("claude-code".to_string(), TargetConfig::default());
+        config
+            .targets
+            .insert("cursor".to_string(), TargetConfig::default());
+        let err = config.validate().unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("claude-code"), "got: {msg}");
+        assert!(msg.contains("source"), "got: {msg}");
     }
 }
