@@ -20,10 +20,15 @@ plugins: []
 # uncommenting.
 targets:
   cursor: {}
-  # codex: {}
-  # copilot: {}
+  codex: {}
+  copilot: {}
+  # v2+ slots: only stub coverage today (no hooks writer, and antigravity's
+  # agents writer just emits drops). Enabling them adds warning noise to
+  # every sync without exercising any real code path; uncomment once real
+  # writers land.
   # gemini-cli: {}
   # junie: {}
+  # antigravity: {}
 
 sync:
   onOpen: true

@@ -253,6 +253,236 @@ fn lossless_canonical_round_trip_preserves_native_claude_events() {
 }
 
 #[test]
+fn source_cursor_reads_cursor_hooks_json_and_renders_codex() {
+    // Mirrors `source_driven_reader_reads_project_settings_json_directly`
+    // but with `source: cursor`. We hand-author `.cursor/hooks.json`,
+    // configure codex as the (only) write target, and expect the cursor
+    // hook to round-trip through the canonical to a codex notify line.
+    #[cfg(unix)]
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    #[cfg(unix)]
+    let home = TempDir::new().unwrap();
+    #[cfg(unix)]
+    let saved = std::env::var_os("HOME");
+    #[cfg(unix)]
+    std::env::set_var("HOME", home.path());
+
+    let project = TempDir::new().unwrap();
+    let cursor_dir = project.path().join(".cursor");
+    std::fs::create_dir_all(&cursor_dir).unwrap();
+    std::fs::write(
+        cursor_dir.join("hooks.json"),
+        serde_json::json!({
+            "hooks": {
+                "Stop": [{
+                    "matcher": ".*",
+                    "hooks": [{"type": "command", "command": "echo done-from-cursor"}]
+                }]
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let mut config = base_config();
+    config.source = Some("cursor".to_string());
+    config.targets.insert("codex".to_string(), empty_target());
+
+    let report = pipeline::run(&config, project.path()).expect("pipeline succeeds");
+    let canonical_path = report.canonical_path.expect("canonical written");
+    assert!(canonical_path.exists());
+    let canonical = canonical_io::read(project.path()).unwrap().unwrap();
+    assert_eq!(canonical.source, "cursor");
+    assert_eq!(canonical.hooks.len(), 1);
+
+    #[cfg(unix)]
+    {
+        let codex_config = home.path().join(".codex/config.toml");
+        assert!(codex_config.exists());
+        let codex_body = std::fs::read_to_string(&codex_config).unwrap();
+        assert!(codex_body.contains(codex_writer::BEGIN_MARKER));
+        let dispatcher = codex_writer::dispatcher_path(project.path());
+        let dispatch_body = std::fs::read_to_string(&dispatcher).unwrap();
+        assert!(dispatch_body.contains("echo done-from-cursor"));
+        match saved {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn source_codex_reads_user_notify_and_renders_cursor() {
+    // Seed a user-authored `~/.codex/config.toml` with a top-level
+    // `notify` and a configured `cursor` target. The pipeline should
+    // produce one canonical Stop hook and render it into `.cursor/hooks.json`.
+    let _guard = HOME_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let home = TempDir::new().unwrap();
+    let saved = std::env::var_os("HOME");
+    std::env::set_var("HOME", home.path());
+
+    let codex_dir = home.path().join(".codex");
+    std::fs::create_dir_all(&codex_dir).unwrap();
+    std::fs::write(
+        codex_dir.join("config.toml"),
+        "model = \"o4-mini\"\nnotify = [\"bash\", \"scripts/notify.sh\"]\n",
+    )
+    .unwrap();
+
+    let project = TempDir::new().unwrap();
+    let mut config = base_config();
+    config.source = Some("codex".to_string());
+    config.targets.insert("cursor".to_string(), empty_target());
+
+    let report = pipeline::run(&config, project.path()).expect("pipeline succeeds");
+
+    let canonical = canonical_io::read(project.path()).unwrap().unwrap();
+    assert_eq!(canonical.source, "codex");
+    assert_eq!(canonical.hooks.len(), 1);
+
+    let cursor_dest = cursor_writer::destination(project.path());
+    assert!(cursor_dest.exists());
+    let body: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&cursor_dest).unwrap()).unwrap();
+    assert!(body["hooks"]["Stop"].is_array());
+    let cmd = body["hooks"]["Stop"][0]["hooks"][0]["command"]
+        .as_str()
+        .unwrap_or("");
+    assert_eq!(cmd, "bash scripts/notify.sh");
+
+    // The pipeline must NOT have warned about "no v1 hook write target".
+    assert!(
+        !report.warnings.iter().any(|w| w.contains("no v1 hook")),
+        "warnings: {:?}",
+        report.warnings
+    );
+
+    match saved {
+        Some(v) => std::env::set_var("HOME", v),
+        None => std::env::remove_var("HOME"),
+    }
+}
+
+#[test]
+fn source_copilot_noops_when_no_hooks_dir() {
+    // Copilot has a hook layer, but this project doesn't ship any hooks
+    // under `.github/hooks/`, so the pipeline short-circuits cleanly even
+    // with cursor as a hook write target — no canonical, no destination
+    // file, no spurious warning.
+    let project = TempDir::new().unwrap();
+    let mut config = base_config();
+    config.source = Some("copilot".to_string());
+    config.targets.insert("cursor".to_string(), empty_target());
+
+    let report = pipeline::run(&config, project.path()).unwrap();
+    assert!(report.canonical_path.is_none());
+    assert!(!cursor_writer::destination(project.path()).exists());
+    // No "no v1 hook write target" warning — there IS a write target,
+    // the source just had nothing to read.
+    assert!(
+        !report.warnings.iter().any(|w| w.contains("no v1 hook")),
+        "warnings: {:?}",
+        report.warnings
+    );
+}
+
+#[test]
+fn source_copilot_reads_github_hooks_and_renders_cursor() {
+    // End-to-end: hand-author a `.github/hooks/repo.json` Stop hook,
+    // configure cursor as the only write target, and assert it renders
+    // through canonical to `.cursor/hooks.json`.
+    let project = TempDir::new().unwrap();
+    let hooks_dir = project.path().join(".github").join("hooks");
+    std::fs::create_dir_all(&hooks_dir).unwrap();
+    std::fs::write(
+        hooks_dir.join("repo.json"),
+        serde_json::json!({
+            "version": 1,
+            "hooks": {
+                "agentStop": [
+                    {"type": "command", "bash": "echo done-from-copilot"}
+                ]
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let mut config = base_config();
+    config.source = Some("copilot".to_string());
+    config.targets.insert("cursor".to_string(), empty_target());
+
+    let report = pipeline::run(&config, project.path()).expect("pipeline succeeds");
+
+    // Canonical artifact landed with source=copilot and one Stop hook.
+    let canonical_path = report.canonical_path.expect("canonical written");
+    assert!(canonical_path.exists());
+    let canonical = canonical_io::read(project.path()).unwrap().unwrap();
+    assert_eq!(canonical.source, "copilot");
+    assert_eq!(canonical.hooks.len(), 1);
+    assert!(matches!(
+        canonical.hooks[0].event,
+        agentenv_core::hooks::Event::Common(agentenv_core::hooks::CommonEvent::Stop)
+    ));
+
+    // Cursor rendered the Stop hook.
+    let cursor_dest = cursor_writer::destination(project.path());
+    assert!(cursor_dest.exists(), "{} missing", cursor_dest.display());
+    let body: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&cursor_dest).unwrap()).unwrap();
+    assert!(body["hooks"]["Stop"].is_array());
+    let cmd = body["hooks"]["Stop"][0]["hooks"][0]["command"]
+        .as_str()
+        .unwrap_or("");
+    assert_eq!(cmd, "echo done-from-copilot");
+
+    // No spurious "no v1 hook write target" warning.
+    assert!(
+        !report.warnings.iter().any(|w| w.contains("no v1 hook")),
+        "warnings: {:?}",
+        report.warnings
+    );
+}
+
+#[test]
+fn source_cursor_skips_cursor_writer() {
+    // `source: cursor` + `targets: {cursor: {}}` must not rewrite the
+    // source file (writers exclude the source target).
+    let project = TempDir::new().unwrap();
+    let cursor_dir = project.path().join(".cursor");
+    std::fs::create_dir_all(&cursor_dir).unwrap();
+    let user_authored = serde_json::json!({
+        "hooks": {
+            "Stop": [{"matcher": ".*", "hooks": [
+                {"type": "command", "command": "user-wrote-this"}
+            ]}]
+        }
+    })
+    .to_string();
+    std::fs::write(cursor_dir.join("hooks.json"), &user_authored).unwrap();
+
+    let mut config = base_config();
+    config.source = Some("cursor".to_string());
+    // Listing the source target is rejected by Config::validate; the
+    // pipeline-level filter (Config::hook_write_targets) also drops it.
+    // Insert `cursor` into `targets` so the filter at config.rs:357-358
+    // actually has something to exclude — otherwise the assertion would
+    // be trivially true. The validation case (source-in-targets rejected
+    // at validate time) is covered separately in config.rs.
+    config.targets.insert("cursor".to_string(), empty_target());
+    assert!(config.hook_write_targets().is_empty());
+
+    let report = pipeline::run(&config, project.path()).unwrap();
+    // No write targets → pipeline warns and skips writing.
+    assert!(report.canonical_path.is_none());
+
+    // Source file unchanged.
+    let after = std::fs::read_to_string(cursor_dir.join("hooks.json")).unwrap();
+    assert_eq!(after, user_authored);
+}
+
+#[test]
 fn source_driven_reader_reads_project_settings_json_directly() {
     // Source-driven contract: when `source: claude-code` is set, the hooks
     // reader pulls from <project>/.claude/settings.json on disk. No
