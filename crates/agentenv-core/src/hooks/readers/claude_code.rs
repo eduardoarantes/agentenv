@@ -17,14 +17,12 @@
 //! }
 //! ```
 //!
-//! The reader emits one canonical [`Hook`] per inner action entry. Event
-//! names recognised by [`CommonEvent::from_pascal`] become common-core
-//! variants; anything else (Claude-specific or future events) becomes a
-//! [`NativeEvent`] preserving the raw matcher block, so the canonical
-//! artifact is lossless.
+//! Per-event parsing is delegated to
+//! [`super::parse_claude_shape_hooks`] so the same logic powers every
+//! Claude-shaped reader (today: claude-code, cursor).
 
 use crate::error::{Error, Result};
-use crate::hooks::types::{Action, Canonical, CommonEvent, Event, Hook, Matcher, NativeEvent};
+use crate::hooks::types::Canonical;
 use serde_json::Value;
 use std::path::Path;
 
@@ -32,9 +30,8 @@ const SOURCE_NAME: &str = "claude-code";
 
 /// Build the canonical by reading `<project_root>/.claude/settings.json`.
 /// Returns `Ok(None)` when the file is absent or has no `hooks` block;
-/// otherwise the canonical contains one [`Hook`] per inner action across
-/// every event key. Returns `Err` only when the file is present but
-/// malformed.
+/// otherwise the canonical contains one hook per inner action across every
+/// event key. Returns `Err` only when the file is present but malformed.
 pub fn read(project_root: &Path) -> Result<Option<Canonical>> {
     let settings_path = project_root.join(".claude").join("settings.json");
     let content = match std::fs::read_to_string(&settings_path) {
@@ -51,123 +48,13 @@ pub fn read(project_root: &Path) -> Result<Option<Canonical>> {
     let Some(raw) = parsed.get("hooks") else {
         return Ok(None);
     };
-    let Value::Object(events) = raw else {
-        return Ok(None);
-    };
-    if events.is_empty() {
-        return Ok(None);
-    }
-
-    let mut hooks = Vec::new();
-    // Sort keys for deterministic canonical output across runs.
-    let mut keys: Vec<&String> = events.keys().collect();
-    keys.sort();
-    for event_name in keys {
-        let matchers = match events.get(event_name) {
-            Some(Value::Array(arr)) => arr,
-            _ => continue,
-        };
-        let common = CommonEvent::from_pascal(event_name);
-
-        for matcher_entry in matchers {
-            let entry_obj = match matcher_entry {
-                Value::Object(m) => m,
-                _ => continue,
-            };
-            let matcher_str = entry_obj.get("matcher").and_then(Value::as_str);
-            let inner = entry_obj.get("hooks").and_then(Value::as_array);
-
-            if let Some(actions) = inner {
-                for action_entry in actions {
-                    if let Some(action) = parse_action(action_entry) {
-                        hooks.push(make_hook(
-                            event_name,
-                            common,
-                            matcher_str,
-                            matcher_entry,
-                            action,
-                        ));
-                    }
-                }
-            } else {
-                // No inner `hooks` array. Preserve the whole entry as
-                // Native so the canonical is still lossless.
-                hooks.push(Hook {
-                    event: Event::Native(NativeEvent {
-                        source: SOURCE_NAME.to_string(),
-                        native_event: event_name.clone(),
-                        payload: matcher_entry.clone(),
-                    }),
-                    matcher: None,
-                    action: Action::Command {
-                        command: String::new(),
-                        timeout_ms: None,
-                        cwd: None,
-                    },
-                });
-            }
-        }
-    }
-
-    if hooks.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(Canonical {
-        source: SOURCE_NAME.to_string(),
-        hooks,
-    }))
-}
-
-fn make_hook(
-    event_name: &str,
-    common: Option<CommonEvent>,
-    matcher_str: Option<&str>,
-    full_matcher_entry: &Value,
-    action: Action,
-) -> Hook {
-    let event = match common {
-        Some(c) => Event::Common(c),
-        None => Event::Native(NativeEvent {
-            source: SOURCE_NAME.to_string(),
-            native_event: event_name.to_string(),
-            payload: full_matcher_entry.clone(),
-        }),
-    };
-    let matcher = matcher_str.map(|s| Matcher {
-        tool: Some(s.to_string()),
-    });
-    Hook {
-        event,
-        matcher,
-        action,
-    }
-}
-
-fn parse_action(value: &Value) -> Option<Action> {
-    let obj = value.as_object()?;
-    let ty = obj.get("type").and_then(Value::as_str)?;
-    if ty != "command" {
-        return None;
-    }
-    let command = obj.get("command").and_then(Value::as_str)?.to_string();
-    let timeout_ms = obj
-        .get("timeout_ms")
-        .and_then(Value::as_u64)
-        .or_else(|| obj.get("timeout").and_then(Value::as_u64));
-    let cwd = obj
-        .get("cwd")
-        .and_then(Value::as_str)
-        .map(std::path::PathBuf::from);
-    Some(Action::Command {
-        command,
-        timeout_ms,
-        cwd,
-    })
+    Ok(super::parse_claude_shape_hooks(SOURCE_NAME, raw))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hooks::types::{Action, CommonEvent, Event};
     use serde_json::json;
     use tempfile::TempDir;
 

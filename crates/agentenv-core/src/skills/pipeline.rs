@@ -33,12 +33,11 @@ pub struct PipelineReport {
 /// Run the pipeline. Returns a no-op report when `source` is unset.
 ///
 /// Source roots are assembled from:
-/// - `<project>/.claude/skills` (always — Claude is the documented source)
-/// - each resolved plugin's `<plugin>/skills` directory
-///
-/// Both project and plugin content is parsed by the same Claude-shaped
-/// reader, matching the v1 decision that marketplace plugins ship in
-/// Claude's native shape (see plan).
+/// - the source target's project-local skills dir (e.g.
+///   `<project>/.claude/skills`, `<project>/.cursor/skills`) — looked up
+///   via [`crate::skills::readers::project_source_dir`]
+/// - each resolved plugin's `<plugin>/skills` directory (plugins are always
+///   Claude-shaped per the v1 marketplace contract)
 pub fn run(
     config: &Config,
     project_root: &Path,
@@ -52,7 +51,9 @@ pub fn run(
     };
 
     let mut roots: Vec<PathBuf> = Vec::new();
-    roots.push(project_root.join(".claude/skills"));
+    if let Some(project_dir) = readers::project_source_dir(source, project_root) {
+        roots.push(project_dir);
+    }
     for plugin in resolved {
         roots.push(PathBuf::from(&plugin.location).join("skills"));
     }
@@ -111,7 +112,11 @@ mod tests {
     }
 
     fn write_skill(project: &Path, name: &str) {
-        let dir = project.join(".claude/skills").join(name);
+        write_skill_under(project, ".claude/skills", name);
+    }
+
+    fn write_skill_under(project: &Path, rel: &str, name: &str) {
+        let dir = project.join(rel).join(name);
         fs::create_dir_all(&dir).unwrap();
         fs::write(
             dir.join("SKILL.md"),
@@ -225,5 +230,24 @@ mod tests {
         // User file preserved; no state link emitted for this skill.
         assert!(!dest.is_symlink());
         assert!(report.state_links.is_empty());
+    }
+
+    #[test]
+    fn source_cursor_reads_cursor_skills_dir() {
+        let project = TempDir::new().unwrap();
+        // Seed the cursor source tree, NOT the claude one — proving the
+        // pipeline picks the source-specific project root.
+        write_skill_under(project.path(), ".cursor/skills", "hello");
+
+        let mut config = base_config();
+        config.source = Some("cursor".to_string());
+        // Pick a target that has a writer and is not the source.
+        config.targets.insert("codex".to_string(), empty_target());
+
+        let report = run(&config, project.path(), &[], &State::default()).unwrap();
+        assert!(report.canonical_path.is_some());
+        // codex skills land at .agents/skills/<name> (cross-tool alias).
+        assert!(project.path().join(".agents/skills/hello").is_symlink());
+        assert_eq!(report.state_links.len(), 1);
     }
 }

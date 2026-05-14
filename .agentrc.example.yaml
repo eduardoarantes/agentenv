@@ -21,16 +21,16 @@ version: 1
 # read-only — sync never writes back to it.
 #
 # Possible values (all known target names):
-#   claude-code   ← v1 supported
-#   cursor        ← recognised but NOT implemented as a source in v1
+#   claude-code   ← v1 supported (hooks + skills + agents)
+#   cursor        ← v1 supported (hooks + skills + agents)
 #   codex         ← recognised but NOT implemented as a source in v1
 #   copilot       ← recognised but NOT implemented as a source in v1
 #   gemini-cli    ← not a documented source target
 #   junie         ← not a documented source target
 #   antigravity   ← not a documented source target
 #
-# Setting `source` to anything except `claude-code` fails validation
-# today; the other entries above are the v2+ slots.
+# Setting `source` to anything outside the v1-supported list above fails
+# validation; the other entries are the v2+ slots.
 source: claude-code
 
 

@@ -31,8 +31,11 @@ pub struct PipelineReport {
 /// Run the pipeline. Returns a no-op report when `source` is unset.
 ///
 /// Source roots are assembled from:
-/// - `<project>/.claude/agents` (always — Claude is the documented source)
-/// - each resolved plugin's `<plugin>/agents` directory
+/// - the source target's project-local agents dir (e.g.
+///   `<project>/.claude/agents`, `<project>/.cursor/agents`) — looked up
+///   via [`crate::agents::readers::project_source_dir`]
+/// - each resolved plugin's `<plugin>/agents` directory (plugins are
+///   Claude-shaped per the v1 marketplace contract)
 pub fn run(
     config: &Config,
     project_root: &Path,
@@ -46,7 +49,9 @@ pub fn run(
     };
 
     let mut roots: Vec<PathBuf> = Vec::new();
-    roots.push(project_root.join(".claude/agents"));
+    if let Some(project_dir) = readers::project_source_dir(source, project_root) {
+        roots.push(project_dir);
+    }
     for plugin in resolved {
         roots.push(PathBuf::from(&plugin.location).join("agents"));
     }
@@ -105,7 +110,11 @@ mod tests {
     }
 
     fn write_agent(project: &Path, name: &str, frontmatter: &str, body: &str) {
-        let dir = project.join(".claude/agents");
+        write_agent_under(project, ".claude/agents", name, frontmatter, body);
+    }
+
+    fn write_agent_under(project: &Path, rel: &str, name: &str, frontmatter: &str, body: &str) {
+        let dir = project.join(rel);
         fs::create_dir_all(&dir).unwrap();
         fs::write(
             dir.join(format!("{name}.md")),
@@ -193,6 +202,32 @@ mod tests {
         let parsed: toml::Value = toml::from_str(&raw).unwrap();
         assert_eq!(parsed["name"].as_str(), Some("rev"));
         assert_eq!(parsed["model"].as_str(), Some("gpt-5"));
+    }
+
+    #[test]
+    fn source_cursor_reads_cursor_agents_dir() {
+        let project = TempDir::new().unwrap();
+        // Seed the cursor source tree, NOT the claude one — proving the
+        // pipeline picks the source-specific project root.
+        write_agent_under(
+            project.path(),
+            ".cursor/agents",
+            "rev",
+            "name: rev\ndescription: r",
+            "body\n",
+        );
+
+        let mut config = base_config();
+        config.source = Some("cursor".to_string());
+        // Pick a target that has a writer and is not the source.
+        config.targets.insert("codex".to_string(), empty_target());
+
+        let report = run(&config, project.path(), &[], &State::default()).unwrap();
+        assert!(report.canonical_path.is_some());
+        // codex agents materialize to .codex/agents/<name>.toml.
+        let dest = project.path().join(".codex/agents/rev.toml");
+        assert!(dest.exists(), "missing {}", dest.display());
+        assert_eq!(report.state_links.len(), 1);
     }
 
     #[test]

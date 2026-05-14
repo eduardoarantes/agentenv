@@ -184,7 +184,7 @@ fn default_ref() -> String {
 pub const HOOK_CAPABLE_TARGETS: &[&str] = &["claude-code", "cursor", "codex", "copilot"];
 
 /// Target names this v1 implementation can READ from (as `source`).
-pub const SOURCE_TARGETS_V1: &[&str] = &["claude-code"];
+pub const SOURCE_TARGETS_V1: &[&str] = &["claude-code", "cursor"];
 
 /// Target names this v1 implementation can WRITE hooks to.
 pub const HOOK_WRITE_TARGETS_V1: &[&str] = &["cursor", "codex"];
