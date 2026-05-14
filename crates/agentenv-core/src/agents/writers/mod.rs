@@ -54,6 +54,21 @@ pub fn write_targets() -> &'static [&'static str] {
     ]
 }
 
+/// Per-target destination metadata for the passthrough-symlink writers
+/// (`(target_dir_rel, filename_suffix)`).
+///
+/// `codex` and `antigravity` are not in this table because they need
+/// real per-target logic (TOML materialization / skip-with-warning).
+fn symlink_target_meta(target: &str) -> Option<(&'static str, &'static str)> {
+    match target {
+        "cursor" => Some((".cursor/agents", ".md")),
+        "copilot" => Some((".github/agents", ".agent.md")),
+        "gemini-cli" => Some((".gemini/agents", ".md")),
+        "junie" => Some((".junie/agents", ".md")),
+        _ => None,
+    }
+}
+
 /// Dispatch to the right writer based on the target name.
 pub fn write(
     target: &str,
@@ -61,34 +76,14 @@ pub fn write(
     project_root: &Path,
     old_state: &State,
 ) -> Result<WriterOutcome> {
+    if let Some((dir, suffix)) = symlink_target_meta(target) {
+        return install_symlinks(canonical, project_root, dir, suffix, target, old_state);
+    }
     match target {
-        "cursor" => install_symlinks(canonical, project_root, ".cursor/agents", ".md", "cursor", old_state),
-        "copilot" => install_symlinks(
-            canonical,
-            project_root,
-            ".github/agents",
-            ".agent.md",
-            "copilot",
-            old_state,
-        ),
-        "gemini-cli" => install_symlinks(
-            canonical,
-            project_root,
-            ".gemini/agents",
-            ".md",
-            "gemini-cli",
-            old_state,
-        ),
-        "junie" => install_symlinks(
-            canonical,
-            project_root,
-            ".junie/agents",
-            ".md",
-            "junie",
-            old_state,
-        ),
         "codex" => codex::write(canonical, project_root, old_state),
-        "antigravity" => Ok(skip_all(canonical, "antigravity",
+        "antigravity" => Ok(skip_all(
+            canonical,
+            "antigravity",
             "antigravity uses a single repo-root `agents.md` file, not per-agent files — agent skipped",
         )),
         other => Err(Error::Config(format!(
