@@ -16,6 +16,7 @@
 
 pub mod claude_code;
 pub mod codex;
+pub mod copilot;
 pub mod cursor;
 
 use crate::error::{Error, Result};
@@ -35,6 +36,10 @@ pub fn read(source: &str, project_root: &Path) -> Result<Option<Canonical>> {
         "claude-code" => claude_code::read(project_root),
         "cursor" => cursor::read(project_root),
         "codex" => codex::read(project_root),
+        // Copilot has no public hook convention; the reader always
+        // returns `Ok(None)` so `source: copilot` is a usable source for
+        // skills/agents even when hook write targets are configured.
+        "copilot" => copilot::read(project_root),
         other => Err(Error::Config(format!(
             "hooks source `{other}` is not implemented in this version"
         ))),

@@ -26,7 +26,9 @@ version: 1
 #   codex         ← v1 supported (hooks via ~/.codex/config.toml,
 #                                 skills via .agents/skills/, agents
 #                                 via .codex/agents/*.toml)
-#   copilot       ← recognised but NOT implemented as a source in v1
+#   copilot       ← v1 supported (skills via .github/skills/, agents via
+#                                 .github/agents/*.agent.md; no hook
+#                                 layer — Copilot publishes none yet)
 #   gemini-cli    ← not a documented source target
 #   junie         ← not a documented source target
 #   antigravity   ← not a documented source target

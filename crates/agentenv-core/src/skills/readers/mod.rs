@@ -12,6 +12,7 @@
 
 pub mod claude_code;
 pub mod codex;
+pub mod copilot;
 pub mod cursor;
 
 use crate::error::{Error, Result};
@@ -31,6 +32,7 @@ pub fn read(source: &str, roots: &[&Path]) -> Result<Option<Canonical>> {
         "claude-code" => claude_code::read(roots),
         "cursor" => cursor::read(roots),
         "codex" => codex::read(roots),
+        "copilot" => copilot::read(roots),
         other => Err(Error::Config(format!(
             "skills source `{other}` is not implemented in this version"
         ))),
@@ -49,6 +51,7 @@ pub fn project_source_dir(source: &str, project_root: &Path) -> Option<PathBuf> 
         // Codex re-uses the cross-tool `.agents/skills` alias — matches
         // where the codex writer materializes Claude-shaped skills.
         "codex" => ".agents/skills",
+        "copilot" => ".github/skills",
         _ => return None,
     };
     Some(project_root.join(rel))

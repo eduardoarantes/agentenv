@@ -365,6 +365,28 @@ fn source_codex_reads_user_notify_and_renders_cursor() {
 }
 
 #[test]
+fn source_copilot_silently_noops_hooks_with_write_targets_configured() {
+    // Copilot has no hook layer. The reader returns `Ok(None)` so the
+    // pipeline short-circuits cleanly even with cursor as a hook write
+    // target — no canonical, no destination file, no spurious warning.
+    let project = TempDir::new().unwrap();
+    let mut config = base_config();
+    config.source = Some("copilot".to_string());
+    config.targets.insert("cursor".to_string(), empty_target());
+
+    let report = pipeline::run(&config, project.path()).unwrap();
+    assert!(report.canonical_path.is_none());
+    assert!(!cursor_writer::destination(project.path()).exists());
+    // No "no v1 hook write target" warning — there IS a write target,
+    // the source just had nothing to read.
+    assert!(
+        !report.warnings.iter().any(|w| w.contains("no v1 hook")),
+        "warnings: {:?}",
+        report.warnings
+    );
+}
+
+#[test]
 fn source_cursor_skips_cursor_writer() {
     // `source: cursor` + `targets: {cursor: {}}` must not rewrite the
     // source file (writers exclude the source target).

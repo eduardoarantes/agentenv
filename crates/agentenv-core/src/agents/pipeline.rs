@@ -210,6 +210,33 @@ mod tests {
         fs::write(dir.join(format!("{name}.toml")), toml_body).unwrap();
     }
 
+    fn write_copilot_agent(project: &Path, name: &str, frontmatter: &str, body: &str) {
+        let dir = project.join(".github/agents");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join(format!("{name}.agent.md")),
+            format!("---\n{frontmatter}\n---\n{body}"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn source_copilot_reads_github_agents_dir_and_strips_suffix() {
+        let project = TempDir::new().unwrap();
+        write_copilot_agent(project.path(), "rev", "name: rev\ndescription: r", "body\n");
+
+        let mut config = base_config();
+        config.source = Some("copilot".to_string());
+        // Cursor writer turns canonical name "rev" into `.cursor/agents/rev.md`,
+        // proving the `.agent.md` suffix was stripped on read.
+        config.targets.insert("cursor".to_string(), empty_target());
+
+        let report = run(&config, project.path(), &[], &State::default()).unwrap();
+        assert!(report.canonical_path.is_some());
+        let dest = project.path().join(".cursor/agents/rev.md");
+        assert!(dest.is_symlink(), "missing {}", dest.display());
+    }
+
     #[test]
     fn source_codex_reads_codex_agents_dir() {
         let project = TempDir::new().unwrap();
