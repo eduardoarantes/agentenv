@@ -21,6 +21,11 @@ const STATE_DIR_PATTERN: &str = ".agentenv/";
 /// without the marketplace being populated.
 pub const DEFAULT_CONFIG: &str = r#"version: 1
 
+# Source-of-truth tool. agentenv reads its native layout losslessly and
+# renders the canonical out to every other configured target. v1 supports
+# `claude-code` as the source.
+source: claude-code
+
 marketplaces:
   default:
     path: ~/.agentenv/marketplace
@@ -31,13 +36,19 @@ marketplaces:
 #   - name: git-simple
 plugins: []
 
+# Tools to materialize the canonical for. `claude-code` is the source and
+# is never written. Empty objects pull in built-in defaults; opt in by
+# uncommenting.
 targets:
-  claude-code: {}
+  cursor: {}
+  # codex: {}
+  # copilot: {}
+  # gemini-cli: {}
+  # junie: {}
 
 sync:
   onOpen: true
   refetch: true
-  mode: symlink
 "#;
 
 /// Outcome of [`Initializer::run`]: the config path that was written plus a
@@ -208,7 +219,8 @@ mod tests {
     fn default_config_parses_and_validates() {
         let config = ConfigLoader::load_from_string(DEFAULT_CONFIG).unwrap();
         assert_eq!(config.version, 1);
-        assert!(config.get_target("claude-code").is_some());
+        assert_eq!(config.source.as_deref(), Some("claude-code"));
+        assert!(config.get_target("cursor").is_some());
     }
 
     #[test]

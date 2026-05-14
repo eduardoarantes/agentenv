@@ -60,11 +60,17 @@ enum Command {
     /// Remove agentenv-managed links recorded in .agentenv/state.json
     Clean {},
 
-    /// Inspect Claude `settings.json` import (requires `use_claude_config: true`)
+    /// Inspect what agentenv would import from Claude `settings.json` (used when `source: claude-code`)
     #[command(name = "claude-config")]
     ClaudeConfig {
         #[command(subcommand)]
         command: ClaudeConfigCommand,
+    },
+
+    /// Inspect agentenv-generated canonical artifacts under `.agentenv/`
+    Canonical {
+        #[command(subcommand)]
+        command: CanonicalCommand,
     },
 }
 
@@ -75,6 +81,16 @@ enum ClaudeConfigCommand {
         /// Emit JSON instead of the human-readable table
         #[arg(long)]
         json: bool,
+    },
+}
+
+#[derive(Parser, Debug)]
+enum CanonicalCommand {
+    /// Print the canonical YAML for a capability.
+    Show {
+        /// Which canonical to dump (skills, agents, or hooks).
+        #[arg(value_parser = ["skills", "agents", "hooks"])]
+        kind: String,
     },
 }
 
@@ -107,7 +123,29 @@ async fn main() -> Result<()> {
         Command::ClaudeConfig { command } => match command {
             ClaudeConfigCommand::Show { json } => run_claude_config_show(&project_root, json),
         },
+        Command::Canonical { command } => match command {
+            CanonicalCommand::Show { kind } => run_canonical_show(&project_root, &kind),
+        },
     }
+}
+
+fn run_canonical_show(project_root: &Path, kind: &str) -> Result<()> {
+    let path = match kind {
+        "skills" => agentenv_core::skills::canonical_io::path(project_root),
+        "agents" => agentenv_core::agents::canonical_io::path(project_root),
+        "hooks" => agentenv_core::hooks::canonical_io::path(project_root),
+        _ => unreachable!("clap validates this"),
+    };
+    if !path.exists() {
+        anyhow::bail!(
+            "no canonical artifact at {} — run `agentenv sync` first",
+            path.display()
+        );
+    }
+    let raw = std::fs::read_to_string(&path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    print!("{raw}");
+    Ok(())
 }
 
 fn resolve_project_root(flag: Option<&Path>) -> Result<PathBuf> {
@@ -181,15 +219,14 @@ fn run_list(project_root: &Path) -> Result<()> {
     }
 
     println!("\n{}", "Targets:".bold());
-    for (name, target) in &config.targets {
-        let mut caps: Vec<&str> = target.source_mappings.keys().map(String::as_str).collect();
-        caps.sort();
-        let label = if caps.is_empty() {
-            "(no capabilities mapped)".to_string()
-        } else {
-            caps.join(", ")
-        };
-        println!("  {} → {}", name, label);
+    let mut names: Vec<&String> = config.targets.keys().collect();
+    names.sort();
+    for name in names {
+        println!("  {name}");
+    }
+    if let Some(source) = config.source.as_deref() {
+        println!("\n{}", "Source:".bold());
+        println!("  {source}");
     }
 
     Ok(())

@@ -53,7 +53,7 @@ pub fn run(config: &Config, project_root: &Path) -> Result<PipelineReport> {
         return Ok(report);
     }
 
-    let canonical = match readers::read(config, source)? {
+    let canonical = match readers::read(source, project_root)? {
         Some(c) => c,
         None => return Ok(report),
     };
@@ -76,10 +76,20 @@ mod tests {
     use super::*;
     use crate::config::{Config, MarketplaceConfig, TargetConfig};
     use crate::hooks::writers::cursor::destination as cursor_dest;
-    use crate::targets::TargetDefaults;
     use std::collections::HashMap;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use tempfile::TempDir;
+
+    /// Write `<project>/.claude/settings.json` with `{"hooks": value}`.
+    fn write_project_hooks(project: &Path, hooks: serde_json::Value) {
+        let claude_dir = project.join(".claude");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        std::fs::write(
+            claude_dir.join("settings.json"),
+            serde_json::json!({ "hooks": hooks }).to_string(),
+        )
+        .unwrap();
+    }
 
     fn base_config() -> Config {
         let mut marketplaces = HashMap::new();
@@ -98,10 +108,8 @@ mod tests {
             targets: HashMap::new(),
             sync: Default::default(),
             clean: Default::default(),
-            use_claude_config: true,
             gitignore_managed_links: false,
             instruction_files: HashMap::new(),
-            claude_hooks: None,
             source: None,
         }
     }
@@ -109,12 +117,15 @@ mod tests {
     #[test]
     fn pipeline_is_noop_when_no_hook_write_target() {
         let project = TempDir::new().unwrap();
-        let mut config = base_config();
-        config.claude_hooks = Some(serde_json::json!({
-            "PreToolUse": [
-                {"matcher": "Bash", "hooks": [{"type": "command", "command": "x"}]}
-            ]
-        }));
+        let config = base_config();
+        write_project_hooks(
+            project.path(),
+            serde_json::json!({
+                "PreToolUse": [
+                    {"matcher": "Bash", "hooks": [{"type": "command", "command": "x"}]}
+                ]
+            }),
+        );
         // No cursor / codex target → pipeline must not run.
         let report = run(&config, project.path()).unwrap();
         assert!(report.canonical_path.is_none());
@@ -127,10 +138,13 @@ mod tests {
         let mut config = base_config();
         config
             .targets
-            .insert("cursor".to_string(), TargetDefaults::cursor());
-        config.claude_hooks = Some(serde_json::json!({
-            "Stop": [{"matcher": ".*", "hooks": [{"type": "command", "command": "x"}]}]
-        }));
+            .insert("cursor".to_string(), TargetConfig::default());
+        write_project_hooks(
+            project.path(),
+            serde_json::json!({
+                "Stop": [{"matcher": ".*", "hooks": [{"type": "command", "command": "x"}]}]
+            }),
+        );
         // source is None → pipeline is opt-in, expect a silent no-op.
         let report = run(&config, project.path()).unwrap();
         assert!(report.canonical_path.is_none());
@@ -163,7 +177,7 @@ mod tests {
         config.source = Some("cursor".to_string());
         config
             .targets
-            .insert("cursor".to_string(), TargetDefaults::cursor());
+            .insert("cursor".to_string(), TargetConfig::default());
         // (We won't actually run this — the reader will reject cursor as
         // source in v1. The point is just that `hook_write_targets`
         // already removes the source from iteration before we even hit
@@ -179,12 +193,15 @@ mod tests {
         config.source = Some("claude-code".to_string());
         config
             .targets
-            .insert("cursor".to_string(), TargetDefaults::cursor());
-        config.claude_hooks = Some(serde_json::json!({
-            "PreToolUse": [
-                {"matcher": "Bash", "hooks": [{"type": "command", "command": "echo bash"}]}
-            ]
-        }));
+            .insert("cursor".to_string(), TargetConfig::default());
+        write_project_hooks(
+            project.path(),
+            serde_json::json!({
+                "PreToolUse": [
+                    {"matcher": "Bash", "hooks": [{"type": "command", "command": "echo bash"}]}
+                ]
+            }),
+        );
         let report = run(&config, project.path()).unwrap();
         assert!(report.canonical_path.is_some());
         assert!(cursor_dest(project.path()).exists());
@@ -197,8 +214,8 @@ mod tests {
         config.source = Some("claude-code".to_string());
         config
             .targets
-            .insert("cursor".to_string(), TargetDefaults::cursor());
-        config.claude_hooks = None;
+            .insert("cursor".to_string(), TargetConfig::default());
+        // Deliberately do NOT create .claude/settings.json — reader returns None.
         let report = run(&config, project.path()).unwrap();
         assert!(report.canonical_path.is_none());
         assert!(!cursor_dest(project.path()).exists());
@@ -211,13 +228,16 @@ mod tests {
         config.source = Some("claude-code".to_string());
         config
             .targets
-            .insert("cursor".to_string(), TargetDefaults::cursor());
+            .insert("cursor".to_string(), TargetConfig::default());
         // PreCompact has no cursor counterpart — must be reported.
-        config.claude_hooks = Some(serde_json::json!({
-            "PreCompact": [
-                {"matcher": ".*", "hooks": [{"type": "command", "command": "echo c"}]}
-            ]
-        }));
+        write_project_hooks(
+            project.path(),
+            serde_json::json!({
+                "PreCompact": [
+                    {"matcher": ".*", "hooks": [{"type": "command", "command": "echo c"}]}
+                ]
+            }),
+        );
         let report = run(&config, project.path()).unwrap();
         assert!(!report.warnings.is_empty());
         assert!(report.warnings.iter().any(|w| w.contains("PreCompact")));
@@ -227,11 +247,6 @@ mod tests {
     fn pipeline_unused_target_config_compiles() {
         // Sanity: building a TargetConfig literal at the test site keeps
         // module imports honest after refactors.
-        let _ = TargetConfig {
-            r#type: "x".to_string(),
-            tools: vec![],
-            paths: HashMap::new(),
-            source_mappings: HashMap::new(),
-        };
+        let _ = TargetConfig::default();
     }
 }

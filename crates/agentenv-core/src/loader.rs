@@ -38,31 +38,29 @@ impl ConfigLoader {
         let content = fs::read_to_string(path)?;
         let mut config: Config = serde_yaml::from_str(&content)?;
 
-        if config.use_claude_config {
+        // Claude import is implicit when `source: claude-code` — agentenv reads
+        // marketplaces / plugins / hook config out of `.claude/settings.json`
+        // and auto-wires `instruction_files` defaults. Missing settings.json
+        // files are not an error; the import is best-effort.
+        if config.source.as_deref() == Some("claude-code") {
             let project_root = path.parent().unwrap_or_else(|| Path::new("."));
             let import = match home_override {
                 Some(home) => ClaudeConfigLoader::load_with_home(project_root, home)?,
                 None => ClaudeConfigLoader::load(project_root)?,
             };
             config.merge_claude_import(import);
-            // Apply target defaults BEFORE deriving default instruction
-            // destinations — the destination set is keyed by the resolved
-            // target `type`, which `apply_defaults` populates.
-            config = config.apply_defaults();
             crate::claude_config::apply_default_instruction_files(&mut config, project_root);
-            config.validate()?;
-            return Ok(config);
         }
 
         config.validate()?;
-        Ok(config.apply_defaults())
+        Ok(config)
     }
 
     /// Load configuration from a YAML string
     ///
-    /// Note: This entry point does NOT load Claude `settings.json` even when
-    /// `use_claude_config: true` is set, because there is no project root to
-    /// resolve relative to. Use [`Self::load_from_file`] for the full flow.
+    /// Note: This entry point does NOT trigger Claude `settings.json` import
+    /// because there is no project root to resolve `.claude/` against. Use
+    /// [`Self::load_from_file`] for the full flow.
     ///
     /// # Arguments
     ///
@@ -76,7 +74,7 @@ impl ConfigLoader {
     pub fn load_from_string(yaml_str: &str) -> Result<Config> {
         let config: Config = serde_yaml::from_str(yaml_str)?;
         config.validate()?;
-        Ok(config.apply_defaults())
+        Ok(config)
     }
 }
 
@@ -90,16 +88,32 @@ mod tests {
     fn test_load_from_string_valid() {
         let yaml = r#"
 version: 1
+source: claude-code
 marketplaces:
   default:
     path: ~/.agentenv/marketplace
     remote: https://example.com/marketplace.git
 targets:
-  claude-code: {}
+  cursor: {}
 "#;
 
         let config = ConfigLoader::load_from_string(yaml);
         assert!(config.is_ok());
+    }
+
+    #[test]
+    fn test_load_from_string_requires_source_when_targets_present() {
+        let yaml = r#"
+version: 1
+marketplaces:
+  default:
+    path: ~/.agentenv/marketplace
+    remote: https://example.com/marketplace.git
+targets:
+  cursor: {}
+"#;
+        let err = ConfigLoader::load_from_string(yaml).unwrap_err();
+        assert!(err.to_string().contains("source"));
     }
 
     #[test]
@@ -113,12 +127,13 @@ targets:
     fn test_load_from_string_invalid_version() {
         let yaml = r#"
 version: 99
+source: claude-code
 marketplaces:
   default:
     path: ~/.agentenv/marketplace
     remote: https://example.com/marketplace.git
 targets:
-  claude-code: {}
+  cursor: {}
 "#;
 
         let result = ConfigLoader::load_from_string(yaml);
@@ -144,12 +159,13 @@ targets: {}
     fn test_load_from_file() -> std::io::Result<()> {
         let yaml = r#"
 version: 1
+source: claude-code
 marketplaces:
   default:
     path: ~/.agentenv/marketplace
     remote: https://example.com/marketplace.git
 targets:
-  claude-code: {}
+  cursor: {}
 "#;
 
         let mut file = NamedTempFile::new()?;
@@ -168,7 +184,7 @@ targets:
     }
 
     #[test]
-    fn test_load_from_file_with_use_claude_config_merges_settings() {
+    fn test_load_from_file_with_source_claude_code_merges_settings() {
         use tempfile::TempDir;
         let project = TempDir::new().unwrap();
         let project_root = project.path();
@@ -193,7 +209,7 @@ targets:
 
         let yaml = r#"
 version: 1
-use_claude_config: true
+source: claude-code
 targets:
   cursor: {}
 "#;
@@ -209,7 +225,7 @@ targets:
     }
 
     #[test]
-    fn test_load_from_file_drops_claude_code_target_when_use_claude_config() {
+    fn test_load_from_file_drops_claude_code_target_when_source_is_claude_code() {
         use tempfile::TempDir;
         let project = TempDir::new().unwrap();
         let project_root = project.path();
@@ -229,7 +245,7 @@ targets:
 
         let yaml = r#"
 version: 1
-use_claude_config: true
+source: claude-code
 targets:
   claude-code: {}
   cursor: {}

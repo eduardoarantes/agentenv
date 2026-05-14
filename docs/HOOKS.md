@@ -70,8 +70,9 @@ In `.agentrc.yaml`:
 
 ```yaml
 version: 1
-use_claude_config: true
 source: claude-code   # declare Claude as the hooks source of truth
+                      # (also implicitly imports marketplaces / plugins from
+                      # `~/.claude/settings.json` and project settings.json)
 
 marketplaces:
   default:
@@ -222,9 +223,13 @@ action:
 - **Format:** JSON, top-level `"hooks"` field
 - **Doc:** <https://code.claude.com/docs/en/hooks>
 - **Role in agentenv:** the only `source` implemented in v1. agentenv reads
-  the merged project + user `hooks` block via the existing
-  `use_claude_config: true` flow (see [claude_config.rs](../crates/agentenv-core/src/claude_config.rs))
-  and never writes back.
+  the merged project + user `hooks` block directly from
+  `.claude/settings.json` (see
+  [hooks/readers/claude_code.rs](../crates/agentenv-core/src/hooks/readers/claude_code.rs))
+  and never writes back. Setting `source: claude-code` also implicitly
+  imports Claude's `extraKnownMarketplaces` / `enabledPlugins` (see
+  [claude_config.rs](../crates/agentenv-core/src/claude_config.rs)); missing
+  settings.json files are tolerated.
 
 Native events Claude supports (28 total): `SessionStart`, `UserPromptSubmit`,
 `UserPromptExpansion`, `PreToolUse`, `PermissionRequest`, `PermissionDenied`,

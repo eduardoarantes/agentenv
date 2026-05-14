@@ -1,9 +1,9 @@
 //! End-to-end integration tests for the source-driven hooks pipeline.
 //!
-//! Walks the full path: `source: claude-code` + `claude_hooks` populated →
-//! canonical YAML on disk → `.cursor/hooks.json` rendered → `~/.codex/config.toml`
-//! `[notify]` block + dispatcher script written. Also exercises the
-//! refuse-on-conflict gate.
+//! Walks the full path: `source: claude-code` + project `.claude/settings.json`
+//! on disk → canonical YAML on disk → `.cursor/hooks.json` rendered →
+//! `~/.codex/config.toml` `[notify]` block + dispatcher script written. Also
+//! exercises the refuse-on-conflict gate.
 
 use agentenv_core::config::{Config, MarketplaceConfig, TargetConfig};
 use agentenv_core::hooks::{
@@ -11,8 +11,20 @@ use agentenv_core::hooks::{
     writers::{codex as codex_writer, cursor as cursor_writer},
 };
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tempfile::TempDir;
+
+/// Write `<project>/.claude/settings.json` with `{"hooks": value}` so the
+/// source-driven reader has something to consume.
+fn write_project_hooks(project: &Path, hooks: serde_json::Value) {
+    let claude_dir = project.join(".claude");
+    std::fs::create_dir_all(&claude_dir).unwrap();
+    std::fs::write(
+        claude_dir.join("settings.json"),
+        serde_json::json!({ "hooks": hooks }).to_string(),
+    )
+    .unwrap();
+}
 
 /// Serialize tests that need an isolated $HOME (codex writer reads it via
 /// `dirs::home_dir()`, which goes through process-global env state).
@@ -37,21 +49,14 @@ fn base_config() -> Config {
         targets: HashMap::new(),
         sync: Default::default(),
         clean: Default::default(),
-        use_claude_config: true,
         gitignore_managed_links: false,
         instruction_files: HashMap::new(),
-        claude_hooks: None,
         source: None,
     }
 }
 
 fn empty_target() -> TargetConfig {
-    TargetConfig {
-        r#type: String::new(),
-        tools: vec![],
-        paths: HashMap::new(),
-        source_mappings: HashMap::new(),
-    }
+    TargetConfig::default()
 }
 
 // codex writer reads `~/.codex/config.toml` via `dirs::home_dir()`. We mock
@@ -70,23 +75,26 @@ fn end_to_end_materializes_claude_hooks_to_cursor_and_codex() {
     config.source = Some("claude-code".to_string());
     config.targets.insert("cursor".to_string(), empty_target());
     config.targets.insert("codex".to_string(), empty_target());
-    config.claude_hooks = Some(serde_json::json!({
-        "PreToolUse": [
-            {"matcher": "Bash", "hooks": [
-                {"type": "command", "command": "echo bash"}
-            ]}
-        ],
-        "Stop": [
-            {"matcher": ".*", "hooks": [
-                {"type": "command", "command": "notify-done"}
-            ]}
-        ],
-        "PreCompact": [
-            {"matcher": ".*", "hooks": [
-                {"type": "command", "command": "echo compact"}
-            ]}
-        ]
-    }));
+    write_project_hooks(
+        project.path(),
+        serde_json::json!({
+            "PreToolUse": [
+                {"matcher": "Bash", "hooks": [
+                    {"type": "command", "command": "echo bash"}
+                ]}
+            ],
+            "Stop": [
+                {"matcher": ".*", "hooks": [
+                    {"type": "command", "command": "notify-done"}
+                ]}
+            ],
+            "PreCompact": [
+                {"matcher": ".*", "hooks": [
+                    {"type": "command", "command": "echo compact"}
+                ]}
+            ]
+        }),
+    );
 
     let report = pipeline::run(&config, project.path()).expect("pipeline succeeds");
 
@@ -139,11 +147,14 @@ fn second_run_is_idempotent_on_cursor() {
     let mut config = base_config();
     config.source = Some("claude-code".to_string());
     config.targets.insert("cursor".to_string(), empty_target());
-    config.claude_hooks = Some(serde_json::json!({
-        "Stop": [{"matcher": ".*", "hooks": [
-            {"type": "command", "command": "x"}
-        ]}]
-    }));
+    write_project_hooks(
+        project.path(),
+        serde_json::json!({
+            "Stop": [{"matcher": ".*", "hooks": [
+                {"type": "command", "command": "x"}
+            ]}]
+        }),
+    );
 
     pipeline::run(&config, project.path()).unwrap();
     let first = std::fs::read_to_string(cursor_writer::destination(project.path())).unwrap();
@@ -168,11 +179,14 @@ fn refuses_when_cursor_file_is_user_authored() {
     let mut config = base_config();
     config.source = Some("claude-code".to_string());
     config.targets.insert("cursor".to_string(), empty_target());
-    config.claude_hooks = Some(serde_json::json!({
-        "Stop": [{"matcher": ".*", "hooks": [
-            {"type": "command", "command": "would-overwrite"}
-        ]}]
-    }));
+    write_project_hooks(
+        project.path(),
+        serde_json::json!({
+            "Stop": [{"matcher": ".*", "hooks": [
+                {"type": "command", "command": "would-overwrite"}
+            ]}]
+        }),
+    );
 
     let err = pipeline::run(&config, project.path()).unwrap_err();
     let msg = err.to_string();
@@ -192,11 +206,14 @@ fn source_unset_is_a_silent_noop_even_with_cursor_target() {
     let project = TempDir::new().unwrap();
     let mut config = base_config();
     config.targets.insert("cursor".to_string(), empty_target());
-    config.claude_hooks = Some(serde_json::json!({
-        "Stop": [{"matcher": ".*", "hooks": [
-            {"type": "command", "command": "ignored"}
-        ]}]
-    }));
+    write_project_hooks(
+        project.path(),
+        serde_json::json!({
+            "Stop": [{"matcher": ".*", "hooks": [
+                {"type": "command", "command": "ignored"}
+            ]}]
+        }),
+    );
 
     let report = pipeline::run(&config, project.path()).unwrap();
     assert!(report.canonical_path.is_none());
@@ -214,9 +231,12 @@ fn lossless_canonical_round_trip_preserves_native_claude_events() {
         "matcher": "*",
         "hooks": [{"type": "command", "command": "claude-specific"}]
     });
-    config.claude_hooks = Some(serde_json::json!({
-        "TeammateIdle": [raw_payload.clone()]
-    }));
+    write_project_hooks(
+        project.path(),
+        serde_json::json!({
+            "TeammateIdle": [raw_payload.clone()]
+        }),
+    );
 
     pipeline::run(&config, project.path()).unwrap();
 
@@ -230,4 +250,45 @@ fn lossless_canonical_round_trip_preserves_native_claude_events() {
     assert_eq!(native.source, "claude-code");
     assert_eq!(native.native_event, "TeammateIdle");
     assert_eq!(native.payload, raw_payload);
+}
+
+#[test]
+fn source_driven_reader_reads_project_settings_json_directly() {
+    // Source-driven contract: when `source: claude-code` is set, the hooks
+    // reader pulls from <project>/.claude/settings.json on disk. No
+    // intermediate field on `Config` is consulted.
+    let project = TempDir::new().unwrap();
+    let claude_dir = project.path().join(".claude");
+    std::fs::create_dir_all(&claude_dir).unwrap();
+    std::fs::write(
+        claude_dir.join("settings.json"),
+        serde_json::json!({
+            "hooks": {
+                "PreToolUse": [{
+                    "matcher": "Bash",
+                    "hooks": [{"type": "command", "command": "echo from-disk"}]
+                }]
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let mut config = base_config();
+    config.source = Some("claude-code".to_string());
+    config.targets.insert("cursor".to_string(), empty_target());
+
+    let report = pipeline::run(&config, project.path()).expect("pipeline succeeds");
+
+    let canonical_path = report.canonical_path.expect("canonical written");
+    assert!(canonical_path.exists());
+    let cursor_dest = cursor_writer::destination(project.path());
+    assert!(cursor_dest.exists(), "{} missing", cursor_dest.display());
+    let body: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&cursor_dest).unwrap()).unwrap();
+    assert!(body["hooks"]["PreToolUse"].is_array());
+    let cmd = body["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+        .as_str()
+        .unwrap_or("");
+    assert_eq!(cmd, "echo from-disk");
 }

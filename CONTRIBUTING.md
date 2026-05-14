@@ -39,10 +39,10 @@ Reusable logic, organised by responsibility:
 
 - `config` — `.agentrc.yaml` schema and path resolution
 - `loader` — YAML parsing and validation
-- `claude_config` — reads `~/.claude/settings.json` and the project's `.claude/settings.json`, translates `extraKnownMarketplaces` / `enabledPlugins` / `hooks` into the agentenv config model (used when `use_claude_config: true`)
+- `claude_config` — reads `~/.claude/settings.json` and the project's `.claude/settings.json`, translates `extraKnownMarketplaces` / `enabledPlugins` / `hooks` into the agentenv config model. Loaded implicitly when `source: claude-code` is set; missing settings.json files are tolerated.
 - `marketplace` — Git-backed plugin source, including the Claude Code `marketplace.json` index format
 - `resolver` — locating plugins inside a marketplace and inferring their capabilities
-- `targets` — built-in defaults (`claude-code`, `cursor`, `codex`, …) and the `TargetConfig` model that drives where files land
+- `skills`, `agents`, `hooks` — source-driven capability pipelines (types, reader, canonical_io, per-target writers). Each module mirrors the others' structure.
 - `symlink` — idempotent link creation and removal with cross-platform handling
 - `state` — the on-disk record of agentenv-managed links (`.agentenv/state.json`)
 - `sync` — the planner + executor that ties the above together
@@ -51,7 +51,7 @@ Reusable logic, organised by responsibility:
 
 ### `agentenv-cli`
 
-Thin CLI entrypoint over `agentenv-core`. Subcommands: `init`, `sync`, `list`, `doctor`, `explain`, `clean`, `claude-config show`.
+Thin CLI entrypoint over `agentenv-core`. Subcommands: `init`, `sync`, `list`, `doctor`, `explain`, `clean`, `claude-config show`, `canonical show <skills|agents|hooks>`.
 
 ### `vscode`
 
@@ -223,22 +223,43 @@ Unacceptable:
 
 ## Targets
 
-A target is a `TargetConfig` in `.agentrc.yaml` keyed by tool name. Each target specifies:
+`agentenv` is **source-driven**: `.agentrc.yaml` declares a single
+`source: <tool>` (today: `claude-code`) and a set of write `targets:`. For
+every capability (hooks, skills, agents) `sync`:
 
-- `type` — free-form identifier (built-in defaults set this to the target name)
-- `tools` — tool ids the target applies to
-- `paths` — optional named path overrides
-- `source_mappings` — for each plugin capability (`skills`, `commands`, `agents`, `hooks`), where on disk to install it and in what mode
+1. reads the source's native layout losslessly into
+   `<project>/.agentenv/<capability>.canonical.yaml`, and
+2. renders the canonical out to every configured non-source target via a
+   per-capability writer.
 
-Built-in defaults live in `crates/agentenv-core/src/targets/defaults.rs` (`TargetDefaults::claude_code()`, `cursor()`, `codex()`, …) and are applied automatically when a user writes `claude-code: {}` in their config. Users override individual fields by spelling them out in YAML.
+`TargetConfig` is intentionally empty — opting a target in by listing it
+(`cursor: {}`) is enough. Path conventions and write/refuse-on-conflict
+logic live inside each capability's writers module
+(`crates/agentenv-core/src/<capability>/writers/`), not in config.
 
-### Adding a new built-in target
+### Adding a new writer (write target)
 
-1. Add a constructor (e.g. `TargetDefaults::gemini_cli()`) returning a `TargetConfig`.
-2. Wire it into the defaults registry so `<target>: {}` resolves to the new config.
-3. Add tests covering the default `source_mappings` and any path conventions specific to that tool.
-4. Document the target in `README.md` and `docs/platform-standards.md`.
-5. If the target uses a non-Markdown leaf format (TOML, JSON, …), call that out explicitly — plugins shipping for that target must use the right extension.
+1. Add a `<target>.rs` under `crates/agentenv-core/src/<capability>/writers/`,
+   or extend the dispatch in `writers/mod.rs`.
+2. Register it in `write_targets()` and the dispatch `match` in that
+   module's `write` function.
+3. Add the target name to `Config::KNOWN_TARGETS` in
+   `crates/agentenv-core/src/config.rs` (and the per-capability v1 write
+   list if applicable, e.g. `HOOK_WRITE_TARGETS_V1`).
+4. Document the destination path and translation losses in
+   `docs/platform-standards.md` and (for hooks) `docs/HOOKS.md`.
+5. If the target uses a non-Markdown leaf format (TOML, JSON, …), the
+   writer must materialize the canonical to that format and report drops
+   in the sync output — silent loss is unacceptable.
+
+### Adding a new source reader
+
+1. Add a `<source>.rs` under `crates/agentenv-core/src/<capability>/readers/`.
+2. Register it in the dispatch `match` in that module's `readers/mod.rs`.
+3. Add the source name to `Config::SOURCE_TARGETS_V1` so validation
+   accepts it.
+4. Document the native layout being read in `docs/platform-standards.md`
+   (and `docs/HOOKS.md` for hooks).
 
 ---
 
@@ -353,8 +374,7 @@ PRs to `main` must pass the full CI matrix (Linux/macOS/Windows test suite, rust
 
 - improve `doctor` diagnostics
 - expand `explain` output
-- add JSON Schema for `.agentrc.yaml`
-- add target tests covering edge cases
+- add writer-target edge-case tests (refuse-on-conflict, drop reporting)
 - improve Windows symlink handling
 - improve README examples
 

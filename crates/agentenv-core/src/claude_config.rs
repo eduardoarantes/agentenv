@@ -1,17 +1,25 @@
-//! Import marketplaces, plugins, and hooks from Claude Code `settings.json`.
+//! Import marketplaces and plugins from Claude Code `settings.json`.
 //!
-//! When `.agentrc.yaml` sets `use_claude_config: true`, the loader reads both
+//! When `.agentrc.yaml` sets `source: claude-code`, the loader reads both
 //! the user's global `~/.claude/settings.json` and the project's
-//! `<root>/.claude/settings.json`, translates Claude's `extraKnownMarketplaces`
-//! and `enabledPlugins` into agentenv's native config model, and preserves
-//! `hooks` verbatim for surfacing via `agentenv claude-config show`.
+//! `<root>/.claude/settings.json` and translates Claude's
+//! `extraKnownMarketplaces` and `enabledPlugins` into agentenv's native
+//! config model. Claude's `hooks` block is preserved verbatim on the
+//! [`ClaudeConfigImport`] return value for surfacing via the
+//! `agentenv claude-config show` CLI command — the canonical hooks
+//! pipeline reads `.claude/settings.json` directly, independent of this
+//! flow.
 //!
-//! Layering: project settings win over global on key conflicts. `.agentrc.yaml`
-//! wins over both (handled by [`crate::config::Config::merge_claude_import`]).
+//! Missing settings.json files are not an error; the import is
+//! best-effort and returns an empty [`ClaudeConfigImport`] when neither
+//! file exists.
+//!
+//! Layering: project settings win over global on key conflicts.
+//! `.agentrc.yaml` wins over both (handled by
+//! [`crate::config::Config::merge_claude_import`]).
 
 use crate::config::{Config, MarketplaceConfig, PluginRef};
 use crate::error::{Error, Result};
-use crate::resolver::ResolvedPlugin;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -30,62 +38,14 @@ pub struct ClaudeConfigImport {
     pub hooks: Value,
 }
 
-/// Name used for the synthesized local-`.claude/` plugin.
-pub const LOCAL_CLAUDE_PLUGIN_NAME: &str = "local-claude";
-
-/// Namespace used for the synthesized local-`.claude/` plugin.
-const LOCAL_CLAUDE_NAMESPACE: &str = "_local";
-
-/// Synthesize a [`ResolvedPlugin`] from the project's `.claude/` directory so
-/// inline-authored agents/skills/commands get propagated to non-Claude targets
-/// alongside marketplace plugins.
-///
-/// Scans `<project_root>/.claude/{agents,skills,commands}` for non-hidden
-/// entries. If at least one capability has content, returns a synthetic
-/// plugin whose `location` is the project's `.claude/` directory; the sync
-/// engine then walks it the same way it walks marketplace plugins. Returns
-/// `None` when nothing inline lives under `.claude/` — callers should treat
-/// that as "no local plugin to sync."
-///
-/// The `claude-code` target is dropped during `merge_claude_import`, so the
-/// synthesized plugin's leaves only ever land in other targets (cursor,
-/// codex, copilot, …) — Claude reads its own `.claude/` directly.
-pub fn synthesize_local_claude_plugin(project_root: &Path) -> Option<ResolvedPlugin> {
-    let claude_dir = project_root.join(".claude");
-    if !claude_dir.is_dir() {
-        return None;
-    }
-
-    let mut capabilities = Vec::new();
-    for cap in ["agents", "skills", "commands"] {
-        if capability_has_entries(&claude_dir.join(cap)) {
-            capabilities.push(cap.to_string());
-        }
-    }
-    if capabilities.is_empty() {
-        return None;
-    }
-
-    Some(ResolvedPlugin {
-        name: LOCAL_CLAUDE_PLUGIN_NAME.to_string(),
-        version: "0.0.0".to_string(),
-        namespace: LOCAL_CLAUDE_NAMESPACE.to_string(),
-        location: claude_dir.to_string_lossy().to_string(),
-        metadata: Value::Null,
-        targets: Vec::new(),
-        capabilities,
-    })
-}
-
-/// Built-in instruction-file destinations claimed by each target type when
-/// `use_claude_config: true` and the user hasn't written their own
-/// `instruction_files:` block. Returning an empty slice means "this target
-/// has no opinion on where its instruction sheet lives" (e.g. claude-code
-/// itself, since `use_claude_config: true` drops it as a sync destination).
+/// Built-in instruction-file destinations claimed by each target when
+/// `source: claude-code` is set and the user hasn't written their own
+/// `instruction_files:` block. Keyed on target name. Empty slice means
+/// "this target has no opinion."
 pub(crate) fn default_instruction_destinations_for_target(
-    target_type: &str,
+    target_name: &str,
 ) -> &'static [&'static str] {
-    match target_type {
+    match target_name {
         // AGENTS.md is the de-facto cross-tool root instruction sheet —
         // accepted by Codex, Cursor, and Copilot (see
         // docs/platform-standards.md §6.1).
@@ -98,24 +58,27 @@ pub(crate) fn default_instruction_destinations_for_target(
     }
 }
 
-/// When `use_claude_config: true` and the user hasn't written an
+/// When `source: claude-code` is set and the user hasn't written an
 /// `instruction_files:` block of their own, populate it with sensible
-/// defaults derived from the configured targets. Mirrors the rest of
-/// `use_claude_config`'s philosophy: Claude is the source of truth, agentenv
+/// defaults derived from the configured targets. Mirrors the rest of the
+/// source-driven philosophy: Claude is the source of truth, agentenv
 /// auto-wires propagation to the other tools.
 ///
 /// Source-file selection:
 /// - prefer `CLAUDE.md` at the project root (matches "Claude as source")
 /// - fall back to `AGENTS.md` so projects using the cross-tool naming still
 ///   get auto-propagation
-/// - if neither exists, do nothing (silently — defaults are best-effort, not
-///   an error condition)
+/// - if neither exists, do nothing (silently — defaults are best-effort,
+///   not an error condition)
 ///
 /// Destinations are the union of each configured target's default
-/// instruction destinations (see [`default_instruction_destinations_for_target`]),
-/// minus the source filename itself to avoid self-references.
+/// instruction destinations (see
+/// [`default_instruction_destinations_for_target`]), minus the source
+/// filename itself to avoid self-references. Caller is responsible for
+/// gating on `source: claude-code` — this function only checks the
+/// `instruction_files` block is empty.
 pub fn apply_default_instruction_files(config: &mut Config, project_root: &Path) {
-    if !config.use_claude_config || !config.instruction_files.is_empty() {
+    if !config.instruction_files.is_empty() {
         return;
     }
 
@@ -128,8 +91,8 @@ pub fn apply_default_instruction_files(config: &mut Config, project_root: &Path)
     };
 
     let mut destinations: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    for target in config.targets.values() {
-        for dest in default_instruction_destinations_for_target(&target.r#type) {
+    for name in config.targets.keys() {
+        for dest in default_instruction_destinations_for_target(name) {
             if *dest == source {
                 continue;
             }
@@ -146,18 +109,6 @@ pub fn apply_default_instruction_files(config: &mut Config, project_root: &Path)
         .insert(source.to_string(), destinations.into_iter().collect());
 }
 
-/// `true` iff `dir` is a directory containing at least one non-hidden entry.
-/// Hidden entries (leading `.`) are ignored to match the sync engine's
-/// own `list_capability_leaves` rules.
-fn capability_has_entries(dir: &Path) -> bool {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return false;
-    };
-    entries
-        .flatten()
-        .any(|entry| !entry.file_name().to_string_lossy().starts_with('.'))
-}
-
 /// Reader for Claude `settings.json` files.
 pub struct ClaudeConfigLoader;
 
@@ -172,23 +123,17 @@ impl ClaudeConfigLoader {
     }
 
     /// Load + merge using an explicit home directory. Test entry point.
+    ///
+    /// Missing settings.json files are not an error — returns a default
+    /// (empty) [`ClaudeConfigImport`] when neither file exists, so a user
+    /// can set `source: claude-code` without being forced to also create
+    /// `~/.claude/settings.json`.
     pub fn load_with_home(project_root: &Path, home: &Path) -> Result<ClaudeConfigImport> {
         let global_path = home.join(".claude").join("settings.json");
         let project_path = project_root.join(".claude").join("settings.json");
 
-        let global = read_optional_json(&global_path)?;
-        let project = read_optional_json(&project_path)?;
-
-        if global.is_none() && project.is_none() {
-            return Err(Error::Config(format!(
-                "use_claude_config: true but no settings.json found at {} or {}",
-                global_path.display(),
-                project_path.display()
-            )));
-        }
-
-        let global = global.unwrap_or(Value::Null);
-        let project = project.unwrap_or(Value::Null);
+        let global = read_optional_json(&global_path)?.unwrap_or(Value::Null);
+        let project = read_optional_json(&project_path)?.unwrap_or(Value::Null);
 
         let marketplaces = merge_marketplaces(&global, &project);
         let plugins = merge_plugins(&global, &project);
@@ -532,12 +477,13 @@ mod tests {
     }
 
     #[test]
-    fn errors_when_no_settings_file_anywhere() {
+    fn returns_empty_import_when_no_settings_file_anywhere() {
         let home = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
-        let err = ClaudeConfigLoader::load_with_home(project.path(), home.path()).unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("no settings.json found"), "msg was: {msg}");
+        let import = ClaudeConfigLoader::load_with_home(project.path(), home.path()).unwrap();
+        assert!(import.marketplaces.is_empty());
+        assert!(import.plugins.is_empty());
+        assert_eq!(import.hooks, Value::Null);
     }
 
     #[test]
@@ -601,70 +547,9 @@ mod tests {
         assert!(import.marketplaces.is_empty());
     }
 
-    fn write_file(path: &Path, contents: &str) {
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, contents).unwrap();
-    }
-
-    #[test]
-    fn synthesize_returns_none_when_no_claude_dir() {
-        let project = TempDir::new().unwrap();
-        assert!(synthesize_local_claude_plugin(project.path()).is_none());
-    }
-
-    #[test]
-    fn synthesize_returns_none_when_capability_dirs_are_empty() {
-        let project = TempDir::new().unwrap();
-        std::fs::create_dir_all(project.path().join(".claude/agents")).unwrap();
-        std::fs::create_dir_all(project.path().join(".claude/skills")).unwrap();
-        // Hidden entries should not count as content.
-        write_file(&project.path().join(".claude/agents/.gitkeep"), "");
-        assert!(synthesize_local_claude_plugin(project.path()).is_none());
-    }
-
-    #[test]
-    fn synthesize_picks_up_agents_and_skills() {
-        let project = TempDir::new().unwrap();
-        write_file(
-            &project.path().join(".claude/agents/code-reviewer.md"),
-            "---\nname: code-reviewer\n---\nbody",
-        );
-        write_file(
-            &project.path().join(".claude/skills/refactor/SKILL.md"),
-            "---\nname: refactor\n---\nbody",
-        );
-        // commands dir has only hidden entries — should not register
-        write_file(&project.path().join(".claude/commands/.gitkeep"), "");
-
-        let plugin = synthesize_local_claude_plugin(project.path()).unwrap();
-        assert_eq!(plugin.name, LOCAL_CLAUDE_PLUGIN_NAME);
-        assert!(plugin.capabilities.contains(&"agents".to_string()));
-        assert!(plugin.capabilities.contains(&"skills".to_string()));
-        assert!(!plugin.capabilities.contains(&"commands".to_string()));
-        assert!(
-            plugin.targets.is_empty(),
-            "synthetic plugin should accept all targets"
-        );
-        assert_eq!(
-            plugin.location,
-            project.path().join(".claude").to_string_lossy()
-        );
-    }
-
-    #[test]
-    fn synthesize_excludes_capability_when_directory_missing() {
-        let project = TempDir::new().unwrap();
-        write_file(
-            &project.path().join(".claude/agents/only-agent.md"),
-            "---\nname: only-agent\n---\nbody",
-        );
-        let plugin = synthesize_local_claude_plugin(project.path()).unwrap();
-        assert_eq!(plugin.capabilities, vec!["agents".to_string()]);
-    }
-
     use crate::config::{CleanConfig, Config, SyncConfig, TargetConfig};
 
-    fn config_with_targets(targets: &[(&str, &str)]) -> Config {
+    fn config_with_targets(target_names: &[&str]) -> Config {
         let mut config = Config {
             version: 1,
             marketplaces: HashMap::new(),
@@ -672,22 +557,14 @@ mod tests {
             targets: HashMap::new(),
             sync: SyncConfig::default(),
             clean: CleanConfig::default(),
-            use_claude_config: true,
             gitignore_managed_links: false,
             instruction_files: HashMap::new(),
-            claude_hooks: None,
-            source: None,
+            source: Some("claude-code".to_string()),
         };
-        for (name, ttype) in targets {
-            config.targets.insert(
-                (*name).to_string(),
-                TargetConfig {
-                    r#type: (*ttype).to_string(),
-                    tools: vec![],
-                    paths: HashMap::new(),
-                    source_mappings: HashMap::new(),
-                },
-            );
+        for name in target_names {
+            config
+                .targets
+                .insert((*name).to_string(), TargetConfig::default());
         }
         config
     }
@@ -696,7 +573,7 @@ mod tests {
     fn defaults_prefer_claude_md_then_fall_back_to_agents_md() {
         let project = TempDir::new().unwrap();
         std::fs::write(project.path().join("CLAUDE.md"), "x").unwrap();
-        let mut config = config_with_targets(&[("cursor", "cursor")]);
+        let mut config = config_with_targets(&["cursor"]);
         apply_default_instruction_files(&mut config, project.path());
         assert!(config.instruction_files.contains_key("CLAUDE.md"));
         assert!(!config.instruction_files.contains_key("AGENTS.md"));
@@ -706,7 +583,7 @@ mod tests {
     fn defaults_use_agents_md_when_claude_md_absent() {
         let project = TempDir::new().unwrap();
         std::fs::write(project.path().join("AGENTS.md"), "x").unwrap();
-        let mut config = config_with_targets(&[("junie", "junie")]);
+        let mut config = config_with_targets(&["junie"]);
         apply_default_instruction_files(&mut config, project.path());
         let dests = config
             .instruction_files
@@ -718,17 +595,7 @@ mod tests {
     #[test]
     fn defaults_skip_silently_when_no_source_exists() {
         let project = TempDir::new().unwrap();
-        let mut config = config_with_targets(&[("cursor", "cursor")]);
-        apply_default_instruction_files(&mut config, project.path());
-        assert!(config.instruction_files.is_empty());
-    }
-
-    #[test]
-    fn defaults_skip_when_use_claude_config_is_false() {
-        let project = TempDir::new().unwrap();
-        std::fs::write(project.path().join("CLAUDE.md"), "x").unwrap();
-        let mut config = config_with_targets(&[("cursor", "cursor")]);
-        config.use_claude_config = false;
+        let mut config = config_with_targets(&["cursor"]);
         apply_default_instruction_files(&mut config, project.path());
         assert!(config.instruction_files.is_empty());
     }
@@ -737,7 +604,7 @@ mod tests {
     fn defaults_skip_when_user_already_set_instruction_files() {
         let project = TempDir::new().unwrap();
         std::fs::write(project.path().join("CLAUDE.md"), "x").unwrap();
-        let mut config = config_with_targets(&[("cursor", "cursor")]);
+        let mut config = config_with_targets(&["cursor"]);
         config
             .instruction_files
             .insert("MINE.md".to_string(), vec!["TARGET.md".to_string()]);
@@ -754,11 +621,7 @@ mod tests {
     fn defaults_union_destinations_across_configured_targets() {
         let project = TempDir::new().unwrap();
         std::fs::write(project.path().join("CLAUDE.md"), "x").unwrap();
-        let mut config = config_with_targets(&[
-            ("cursor", "cursor"),
-            ("junie", "junie"),
-            ("antigravity", "antigravity"),
-        ]);
+        let mut config = config_with_targets(&["cursor", "junie", "antigravity"]);
         apply_default_instruction_files(&mut config, project.path());
         let mut dests = config.instruction_files.get("CLAUDE.md").unwrap().clone();
         dests.sort();
@@ -778,7 +641,7 @@ mod tests {
         // Source is AGENTS.md (CLAUDE.md absent); cursor's default destination
         // is also AGENTS.md — must be skipped to avoid a self-reference.
         std::fs::write(project.path().join("AGENTS.md"), "x").unwrap();
-        let mut config = config_with_targets(&[("cursor", "cursor")]);
+        let mut config = config_with_targets(&["cursor"]);
         apply_default_instruction_files(&mut config, project.path());
         // No destinations means no entry was inserted.
         assert!(config.instruction_files.is_empty());
@@ -788,7 +651,7 @@ mod tests {
     fn defaults_for_gemini_cli_include_gemini_md_and_agents_md() {
         let project = TempDir::new().unwrap();
         std::fs::write(project.path().join("CLAUDE.md"), "x").unwrap();
-        let mut config = config_with_targets(&[("gemini-cli", "gemini-cli")]);
+        let mut config = config_with_targets(&["gemini-cli"]);
         apply_default_instruction_files(&mut config, project.path());
         let mut dests = config.instruction_files.get("CLAUDE.md").unwrap().clone();
         dests.sort();
@@ -798,13 +661,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn defaults_skip_unknown_target_types() {
-        let project = TempDir::new().unwrap();
-        std::fs::write(project.path().join("CLAUDE.md"), "x").unwrap();
-        let mut config = config_with_targets(&[("custom", "custom-tool")]);
-        apply_default_instruction_files(&mut config, project.path());
-        // Unknown target contributes no destinations.
-        assert!(config.instruction_files.is_empty());
-    }
+    // (Unknown target types are now rejected at `Config::validate`, so the
+    // "unknown target contributes no instruction destinations" case is
+    // structurally unreachable and the test that exercised it was removed.)
 }

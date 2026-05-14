@@ -57,6 +57,7 @@ fn config_yaml(marketplace_path: &Path, plugins: &str, targets: &str) -> String 
     format!(
         r#"
 version: 1
+source: claude-code
 marketplaces:
   default:
     path: {}
