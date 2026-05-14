@@ -20,10 +20,11 @@ plugins: []
 # uncommenting.
 targets:
   cursor: {}
-  # codex: {}
-  # copilot: {}
-  # gemini-cli: {}
-  # junie: {}
+  codex: {}
+  copilot: {}
+  gemini-cli: {}
+  junie: {}
+  antigravity: {}
 
 sync:
   onOpen: true
