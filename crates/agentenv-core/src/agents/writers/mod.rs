@@ -300,6 +300,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn cursor_replaces_agentenv_managed_symlink() {
         let project = TempDir::new().unwrap();
         let src = populate_source(project.path(), "rev");

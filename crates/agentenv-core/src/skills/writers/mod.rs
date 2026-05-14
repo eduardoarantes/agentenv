@@ -251,6 +251,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn refuses_when_destination_is_foreign_symlink() {
         let project = TempDir::new().unwrap();
         let source_root = project.path().join(".claude/skills");
@@ -273,6 +274,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn replaces_agentenv_managed_symlink() {
         let project = TempDir::new().unwrap();
         let source_root = project.path().join(".claude/skills");
