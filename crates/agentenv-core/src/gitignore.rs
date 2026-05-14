@@ -13,7 +13,7 @@ use crate::error::Result;
 use crate::state::StateLink;
 use std::collections::BTreeSet;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Marker that opens the agentenv-managed block. Includes a hint not to
 /// hand-edit and a pointer at the regenerating command.
@@ -26,23 +26,39 @@ pub const END_MARKER: &str = "# <<< agentenv managed >>>";
 /// Standard filename agentenv writes to (project-root `.gitignore`).
 const GITIGNORE_FILENAME: &str = ".gitignore";
 
-/// Refresh the managed block in `<project_root>/.gitignore` based on `links`.
+/// Top-level directories that agentenv writes INTO but does not own
+/// exclusively — collapsing to them would gitignore user-authored content
+/// living alongside agentenv's. For these, the gitignore writer collapses
+/// one level deeper (e.g. `.github/skills/x` → `/.github/skills/`, leaving
+/// `.github/workflows/` and friends untouched).
+const SHARED_NAMESPACES: &[&str] = &[".github"];
+
+/// Refresh the managed block in `<project_root>/.gitignore` based on
+/// `links` plus `extra_artifacts`.
 ///
-/// Each link contributes one line — its target path expressed relative to
-/// the project root, with a leading `/` for root-anchoring (e.g.
-/// `/.cursor/agents/foo.md`). Entries are sorted alphabetically for stable
-/// diffs. If `links` is empty, an empty block is still written so a future
-/// sync that adds links can splice into it without re-detecting marker
-/// state.
+/// Each managed path (a state-link target or a writer-supplied extra
+/// artifact) is collapsed to its first project-relative path component:
+/// `.cursor/skills/foo` → `/.cursor/`, `.cursor/hooks.json` → `/.cursor/`,
+/// `AGENTS.md` → `/AGENTS.md`. The block thus ignores the whole tool folder
+/// agentenv has written into, regardless of which capability landed there.
+/// Entries are sorted alphabetically for stable diffs.
+///
+/// `extra_artifacts` exists for writers that materialize files outside the
+/// state-link model (e.g. the hooks writers' `.cursor/hooks.json`).
 ///
 /// If `.gitignore` doesn't exist, it's created with just the managed block.
 /// If it exists but contains no markers, the block is appended at the end
 /// (preceded by a blank line for readability if the existing file doesn't
-/// already end with one).
-pub fn refresh_managed_block(project_root: &Path, links: &[StateLink]) -> Result<()> {
+/// already end with one). An empty block is still written when there's
+/// nothing to track, so a future sync can splice into it.
+pub fn refresh_managed_block(
+    project_root: &Path,
+    links: &[StateLink],
+    extra_artifacts: &[PathBuf],
+) -> Result<()> {
     let gitignore_path = project_root.join(GITIGNORE_FILENAME);
     let existing = read_existing(&gitignore_path)?;
-    let entries = collect_entries(project_root, links);
+    let entries = collect_entries(project_root, links, extra_artifacts);
     let new_block = render_block(&entries);
     let updated = splice_block(&existing, &new_block);
     write_atomically(&gitignore_path, &updated)
@@ -73,26 +89,53 @@ fn read_existing(path: &Path) -> Result<Option<String>> {
     }
 }
 
-/// Project-relative path of each link, sorted and deduplicated. Hidden
-/// dotfiles inside the path are preserved (they're often `.claude/...`).
-/// Path separators are always `/`, even on Windows — git's `.gitignore`
-/// format is platform-agnostic, and a Windows `\`-separated entry would
-/// silently fail to match.
-fn collect_entries(project_root: &Path, links: &[StateLink]) -> Vec<String> {
+/// Build the sorted, deduplicated set of gitignore entries.
+///
+/// For each managed path (link target or extra artifact), strip the
+/// project root and reduce to the first path component: a single-component
+/// path is a project-root file (emit `/<name>`), anything deeper collapses
+/// to its top-level folder (emit `/<first>/`). This is the "any folder
+/// agentenv created" rule — it covers materialized files alongside
+/// symlinks without listing each leaf separately.
+///
+/// Paths outside `project_root` are skipped defensively. Path separators
+/// in the output are always `/`, even on Windows — git's `.gitignore`
+/// format is platform-agnostic.
+fn collect_entries(
+    project_root: &Path,
+    links: &[StateLink],
+    extra_artifacts: &[PathBuf],
+) -> Vec<String> {
     let mut set: BTreeSet<String> = BTreeSet::new();
-    for link in links {
-        let Ok(rel) = link.target.strip_prefix(project_root) else {
-            // Should never happen — managed links are always inside the
-            // project. Skip defensively if it does.
-            continue;
+    let mut push = |path: &Path| {
+        let Ok(rel) = path.strip_prefix(project_root) else {
+            return;
         };
-        let joined: Vec<String> = rel
+        let components: Vec<String> = rel
             .components()
             .map(|c| c.as_os_str().to_string_lossy().into_owned())
             .collect();
-        let mut entry = String::from("/");
-        entry.push_str(&joined.join("/"));
-        set.insert(entry);
+        match components.as_slice() {
+            [] => {},
+            [only] => {
+                set.insert(format!("/{only}"));
+            },
+            [first, second, ..] if SHARED_NAMESPACES.contains(&first.as_str()) => {
+                // Shared parent (e.g. `.github/`): collapse one level deeper
+                // so we don't ignore user-authored sibling content like
+                // `.github/workflows/`.
+                set.insert(format!("/{first}/{second}/"));
+            },
+            [first, ..] => {
+                set.insert(format!("/{first}/"));
+            },
+        }
+    };
+    for link in links {
+        push(&link.target);
+    }
+    for artifact in extra_artifacts {
+        push(artifact);
     }
     set.into_iter().collect()
 }
@@ -225,10 +268,15 @@ mod tests {
                 .to_str()
                 .unwrap(),
         );
-        refresh_managed_block(project.path(), &[link]).unwrap();
+        refresh_managed_block(project.path(), &[link], &[]).unwrap();
         let content = fs::read_to_string(project.path().join(".gitignore")).unwrap();
         assert!(content.contains(BEGIN_MARKER));
-        assert!(content.contains("/.cursor/agents/foo.md"));
+        // Collapsed to the top-level tool folder.
+        assert!(content.contains("/.cursor/"));
+        assert!(
+            !content.contains("/.cursor/agents/foo.md"),
+            "leaf path should be collapsed away"
+        );
         assert!(content.contains(END_MARKER));
     }
 
@@ -238,21 +286,21 @@ mod tests {
         let path = project.path().join(".gitignore");
         fs::write(&path, "# user content\nnode_modules/\n").unwrap();
         let link = make_link(project.path().join(".junie/AGENTS.md").to_str().unwrap());
-        refresh_managed_block(project.path(), &[link]).unwrap();
+        refresh_managed_block(project.path(), &[link], &[]).unwrap();
         let content = fs::read_to_string(&path).unwrap();
         // User content preserved.
         assert!(content.starts_with("# user content\nnode_modules/\n"));
-        // Block appended.
+        // Block appended; entry collapsed to `/.junie/`.
         assert!(content.contains(BEGIN_MARKER));
-        assert!(content.contains("/.junie/AGENTS.md"));
+        assert!(content.contains("/.junie/"));
     }
 
     #[test]
     fn replaces_existing_managed_block_in_place() {
         let project = TempDir::new().unwrap();
         let path = project.path().join(".gitignore");
-        // Seed with a user line, a managed block holding an old leaf, and a
-        // trailing user line. Replacement must keep both user lines.
+        // Seed with a user line, a managed block holding an old entry, and
+        // a trailing user line. Replacement must keep both user lines.
         let initial = format!(
             "node_modules/\n\n{begin}\n/.cursor/agents/old.md\n{end}\n\n*.log\n",
             begin = BEGIN_MARKER,
@@ -267,15 +315,19 @@ mod tests {
                 .to_str()
                 .unwrap(),
         );
-        refresh_managed_block(project.path(), &[link]).unwrap();
+        refresh_managed_block(project.path(), &[link], &[]).unwrap();
 
         let content = fs::read_to_string(&path).unwrap();
         assert!(content.starts_with("node_modules/\n"));
         assert!(content.ends_with("*.log\n"));
-        assert!(content.contains("/.cursor/agents/new.md"));
+        assert!(content.contains("/.cursor/"));
         assert!(
             !content.contains("/.cursor/agents/old.md"),
-            "old entry should be replaced"
+            "old leaf entry should be gone"
+        );
+        assert!(
+            !content.contains("/.cursor/agents/new.md"),
+            "new leaf entry should be collapsed to /.cursor/"
         );
     }
 
@@ -283,9 +335,9 @@ mod tests {
     fn refresh_is_idempotent() {
         let project = TempDir::new().unwrap();
         let link = make_link(project.path().join(".junie/AGENTS.md").to_str().unwrap());
-        refresh_managed_block(project.path(), std::slice::from_ref(&link)).unwrap();
+        refresh_managed_block(project.path(), std::slice::from_ref(&link), &[]).unwrap();
         let first = fs::read_to_string(project.path().join(".gitignore")).unwrap();
-        refresh_managed_block(project.path(), std::slice::from_ref(&link)).unwrap();
+        refresh_managed_block(project.path(), std::slice::from_ref(&link), &[]).unwrap();
         let second = fs::read_to_string(project.path().join(".gitignore")).unwrap();
         assert_eq!(
             first, second,
@@ -297,13 +349,7 @@ mod tests {
     fn entries_are_sorted_for_stable_diffs() {
         let project = TempDir::new().unwrap();
         let links = vec![
-            make_link(
-                project
-                    .path()
-                    .join(".cursor/agents/zebra.md")
-                    .to_str()
-                    .unwrap(),
-            ),
+            make_link(project.path().join(".junie/AGENTS.md").to_str().unwrap()),
             make_link(
                 project
                     .path()
@@ -311,16 +357,85 @@ mod tests {
                     .to_str()
                     .unwrap(),
             ),
-            make_link(project.path().join(".junie/AGENTS.md").to_str().unwrap()),
+            make_link(project.path().join(".cursor/skills/foo").to_str().unwrap()),
         ];
-        refresh_managed_block(project.path(), &links).unwrap();
+        refresh_managed_block(project.path(), &links, &[]).unwrap();
         let content = fs::read_to_string(project.path().join(".gitignore")).unwrap();
-        let alpha_pos = content.find("/.cursor/agents/alpha.md").unwrap();
-        let junie_pos = content.find("/.junie/AGENTS.md").unwrap();
-        let zebra_pos = content.find("/.cursor/agents/zebra.md").unwrap();
-        // Alphabetical: alpha < zebra (both under .cursor/) < junie/ (different parent).
-        assert!(alpha_pos < zebra_pos);
-        assert!(zebra_pos < junie_pos);
+        // After collapsing, only two distinct entries remain (/.cursor/
+        // and /.junie/), sorted alphabetically.
+        let cursor_pos = content.find("/.cursor/").unwrap();
+        let junie_pos = content.find("/.junie/").unwrap();
+        assert!(cursor_pos < junie_pos);
+    }
+
+    #[test]
+    fn collapses_multiple_leaves_under_same_folder_to_single_entry() {
+        let project = TempDir::new().unwrap();
+        let links = vec![
+            make_link(project.path().join(".cursor/skills/a").to_str().unwrap()),
+            make_link(project.path().join(".cursor/skills/b").to_str().unwrap()),
+            make_link(project.path().join(".cursor/agents/c.md").to_str().unwrap()),
+        ];
+        refresh_managed_block(project.path(), &links, &[]).unwrap();
+        let content = fs::read_to_string(project.path().join(".gitignore")).unwrap();
+        // Exactly one `/.cursor/` line between the markers.
+        let between = content
+            .split(BEGIN_MARKER)
+            .nth(1)
+            .unwrap()
+            .split(END_MARKER)
+            .next()
+            .unwrap();
+        let cursor_lines = between.lines().filter(|l| l.contains(".cursor")).count();
+        assert_eq!(
+            cursor_lines, 1,
+            "expected single /.cursor/ entry; got: {between}"
+        );
+    }
+
+    #[test]
+    fn shared_namespace_collapses_one_level_deeper() {
+        // Copilot writes into `.github/` — a shared namespace that also
+        // holds user-authored CI workflows, issue templates, etc. The
+        // gitignore writer must collapse to `/.github/skills/` rather
+        // than `/.github/` so siblings like `.github/workflows/ci.yml`
+        // aren't accidentally ignored.
+        let project = TempDir::new().unwrap();
+        let links = vec![
+            make_link(project.path().join(".github/skills/x").to_str().unwrap()),
+            make_link(project.path().join(".github/agents/y.md").to_str().unwrap()),
+        ];
+        refresh_managed_block(project.path(), &links, &[]).unwrap();
+        let content = fs::read_to_string(project.path().join(".gitignore")).unwrap();
+        assert!(content.contains("/.github/skills/"));
+        assert!(content.contains("/.github/agents/"));
+        assert!(
+            !content.lines().any(|l| l.trim() == "/.github/"),
+            "must not emit a blanket /.github/ entry that would swallow workflows/"
+        );
+    }
+
+    #[test]
+    fn extra_artifact_covers_materialized_files_without_state_links() {
+        // Cursor's hooks.json is materialized by the hooks writer and does
+        // NOT appear in state.links. Passing it as an extra artifact must
+        // still produce a `/.cursor/` ignore entry.
+        let project = TempDir::new().unwrap();
+        let hooks_path = project.path().join(".cursor/hooks.json");
+        refresh_managed_block(project.path(), &[], &[hooks_path]).unwrap();
+        let content = fs::read_to_string(project.path().join(".gitignore")).unwrap();
+        assert!(content.contains("/.cursor/"));
+    }
+
+    #[test]
+    fn root_level_files_emit_unsuffixed_entry() {
+        // Instruction-file destinations like `AGENTS.md` live at the
+        // project root and must stay file-shaped (no trailing slash).
+        let project = TempDir::new().unwrap();
+        let link = make_link(project.path().join("AGENTS.md").to_str().unwrap());
+        refresh_managed_block(project.path(), &[link], &[]).unwrap();
+        let content = fs::read_to_string(project.path().join(".gitignore")).unwrap();
+        assert!(content.contains("\n/AGENTS.md\n"));
     }
 
     #[test]
@@ -364,7 +479,7 @@ mod tests {
     #[test]
     fn empty_links_writes_empty_block() {
         let project = TempDir::new().unwrap();
-        refresh_managed_block(project.path(), &[]).unwrap();
+        refresh_managed_block(project.path(), &[], &[]).unwrap();
         let content = fs::read_to_string(project.path().join(".gitignore")).unwrap();
         assert!(content.contains(BEGIN_MARKER));
         assert!(content.contains(END_MARKER));

@@ -1,0 +1,33 @@
+version: 1
+
+# Source-of-truth tool. agentenv reads its native layout losslessly and
+# renders the canonical out to every other configured target. v1 supports
+# `claude-code` as the source.
+source: claude-code
+
+marketplaces:
+  default:
+    path: ~/.agentenv/marketplace
+    remote: https://github.com/eduardoarantes/claude-code-plugin-marketplace.git
+    ref: main
+
+# Add plugin entries here, e.g.:
+#   - name: git-simple
+plugins: []
+
+# Tools to materialize the canonical for. `claude-code` is the source and
+# is never written. Empty objects pull in built-in defaults; opt in by
+# uncommenting.
+targets:
+  cursor: {}
+  # codex: {}
+  # copilot: {}
+  # gemini-cli: {}
+  # junie: {}
+
+sync:
+  onOpen: true
+  refetch: true
+
+
+gitignore_managed_links: true

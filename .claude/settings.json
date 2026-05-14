@@ -22,5 +22,18 @@
       "WebFetch(domain:github.com)",
       "Bash(curl -sI \"https://open-vsx.org/user-settings/profile\")"
     ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/format-changed.sh\""
+          }
+        ]
+      }
+    ]
   }
 }

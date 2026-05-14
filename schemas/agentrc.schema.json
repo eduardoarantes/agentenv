@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "agentenv Configuration",
-  "description": "Configuration schema for agentenv (.agentrc.yaml)",
+  "description": "Configuration schema for agentenv (.agentrc.yaml). Source-driven model: declare a single `source` tool, then opt-in to writer `targets`.",
   "type": "object",
   "required": ["version"],
   "additionalProperties": false,
@@ -11,15 +11,10 @@
       "minimum": 1,
       "description": "Configuration version"
     },
-    "use_claude_config": {
-      "type": "boolean",
-      "default": false,
-      "description": "Import marketplaces, plugins, and hooks from Claude Code's settings.json files (project ./.claude/settings.json and global ~/.claude/settings.json). When true, the `claude-code` target is dropped from sync because Claude Code is treated as the source of truth, not a destination."
-    },
     "source": {
       "type": "string",
-      "enum": ["claude-code", "cursor", "codex", "copilot"],
-      "description": "Opt-in source for the hooks pipeline. When set, agentenv reads the named target's native hooks file losslessly into .agentenv/hooks.canonical.yaml and renders it out to every other supporting target (cursor, codex). The named source is always read-only. v1 only implements `claude-code` as a source — setting cursor/codex/copilot here will fail validation until those readers ship. See docs/HOOKS.md."
+      "enum": ["claude-code", "cursor", "codex", "copilot", "gemini-cli", "junie", "antigravity"],
+      "description": "Source-of-truth target whose native layout feeds every capability pipeline (hooks, skills, agents). Required when `targets` is non-empty. Setting `source: claude-code` also implicitly imports marketplaces / plugins from `~/.claude/settings.json` and `<project>/.claude/settings.json` (missing files are tolerated). v1 only implements `claude-code` as a source — setting any other value will fail validation until those readers ship."
     },
     "marketplaces": {
       "type": "object",
@@ -48,7 +43,7 @@
     },
     "plugins": {
       "type": "array",
-      "description": "Plugins to import from marketplace",
+      "description": "Plugins to import from marketplace. All plugins are parsed as Claude-shaped (skills/<name>/SKILL.md, agents/<name>.md).",
       "items": {
         "type": "object",
         "required": ["name"],
@@ -71,52 +66,12 @@
     },
     "targets": {
       "type": "object",
-      "description": "Target tools and their configurations",
+      "description": "Set membership map of tools to materialize the canonical for. Empty per-target object (`cursor: {}`) opts the target in; path conventions and translation rules live in each capability's writers, not here.",
       "additionalProperties": {
         "type": "object",
+        "description": "Per-target options. Currently empty — reserved for future per-target settings.",
         "additionalProperties": false,
-        "properties": {
-          "type": {
-            "type": "string",
-            "description": "Target type identifier (free-form; built-in defaults match the target name)."
-          },
-          "tools": {
-            "type": "array",
-            "description": "Specific tools this target applies to.",
-            "items": { "type": "string" }
-          },
-          "paths": {
-            "type": "object",
-            "description": "Key paths for this target",
-            "additionalProperties": {
-              "type": "string"
-            }
-          },
-          "source_mappings": {
-            "type": "object",
-            "description": "Per-capability install destinations (skills, commands, agents, etc.). The source is implicit: each plugin contributes <plugin_location>/<capability>.",
-            "additionalProperties": {
-              "type": "array",
-              "items": {
-                "type": "object",
-                "required": ["target"],
-                "additionalProperties": false,
-                "properties": {
-                  "target": {
-                    "type": "string",
-                    "description": "Destination directory under the target tool. Use {plugin} to expand the plugin name (e.g. .claude-code/{plugin}/skills). Without {plugin}, all plugins write to the same path and the last sync wins."
-                  },
-                  "mode": {
-                    "type": "string",
-                    "enum": ["symlink", "copy"],
-                    "default": "symlink",
-                    "description": "How to install (symlink or copy)"
-                  }
-                }
-              }
-            }
-          }
-        }
+        "properties": {}
       }
     },
     "gitignore_managed_links": {
@@ -149,12 +104,18 @@
           "type": "boolean",
           "default": false,
           "description": "Re-fetch marketplace on sync"
-        },
-        "mode": {
-          "type": "string",
-          "enum": ["symlink", "copy"],
-          "default": "symlink",
-          "description": "Default installation mode"
+        }
+      }
+    },
+    "clean": {
+      "type": "object",
+      "description": "Clean behavior configuration",
+      "additionalProperties": false,
+      "properties": {
+        "pruneEmptyDirs": {
+          "type": "boolean",
+          "default": true,
+          "description": "Remove directories left empty after managed links are removed (stops at project root)."
         }
       }
     }

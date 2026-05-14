@@ -2,7 +2,8 @@
 
 This document captures the canonical install paths, file formats, and discovery
 rules for each AI coding tool that `agentenv` may target. It is the source of
-truth for the defaults in `crates/agentenv-core/src/targets/defaults.rs`.
+truth for the per-target writer modules under
+`crates/agentenv-core/src/<capability>/writers/`.
 
 Every entry is sourced from the tool's **official** documentation, retrieved
 2026-04-28. URLs are included so claims can be re-verified when the docs
@@ -311,71 +312,56 @@ skills.
 
 ---
 
-## 8. Recommendations for `agentenv` defaults
+## 8. Where agentenv writes — by capability
 
-Defaults are project-scoped. The `{plugin}` placeholder is rendered at sync
-time. Capabilities a target doesn't natively support are simply not exported.
-
-### Skills — supported by every target
-
-| Target         | Mapping                                  |
-| -------------- | ---------------------------------------- |
-| `claude-code`  | `.claude/skills/{plugin}`                |
-| `codex`        | `.agents/skills/{plugin}`                |
-| `cursor`       | `.cursor/skills/{plugin}`                |
-| `copilot`      | `.github/skills/{plugin}`                |
-| `gemini-cli`   | `.gemini/skills/{plugin}`                |
-| `junie`        | `.junie/skills/{plugin}`                 |
-| `antigravity`  | `.agent/skills/{plugin}` (singular)      |
-
-### Subagents
-
-| Target         | Mapping                                  |
-| -------------- | ---------------------------------------- |
-| `claude-code`  | `.claude/agents/{plugin}`                |
-| `codex`        | `.codex/agents/{plugin}` (TOML files only) |
-| `cursor`       | `.cursor/agents/{plugin}`                |
-| `gemini-cli`   | `.gemini/agents/{plugin}`                |
-| `copilot`      | `.github/agents/{plugin}` (`*.agent.md`) |
-| `junie`        | `.junie/agents/{plugin}`                 |
-| `antigravity`  | (skip — single root `agents.md` file, not a directory) |
-
-### Slash commands
-
-| Target         | Mapping                                  |
-| -------------- | ---------------------------------------- |
-| `claude-code`  | `.claude/commands/{plugin}` (legacy form) |
-| `gemini-cli`   | `.gemini/commands/{plugin}` (TOML files) |
-| `copilot`      | `.github/prompts/{plugin}` (`*.prompt.md`) |
-| `antigravity`  | `.agents/workflows/{plugin}` (plural!)   |
-| `codex`        | (skip — `~/.codex/prompts` is user-only and deprecated) |
-| `cursor`       | (skip — no documented project path)      |
-| `junie`        | (skip — no separate concept)             |
+agentenv is **source-driven**: declare one tool's native layout as the
+source of truth (today: Claude Code), and `agentenv sync` translates each
+capability into every configured target. Path conventions live inside the
+per-capability writer modules (`crates/agentenv-core/src/<capability>/writers/`);
+the per-tool tables above (§1–4) are the underlying reference.
 
 ### Hooks
+Source-driven. See [HOOKS.md](HOOKS.md) for the canonical model. v1
+sources: `claude-code`. v1 writers: `cursor`, `codex`.
 
-Hooks are **source-driven**: a single target tool's existing hooks file is
-declared as the source of truth via `source:` in `.agentrc.yaml`, and
-`agentenv sync` translates it losslessly into `.agentenv/hooks.canonical.yaml`
-and then renders it out to every other supporting target's native file.
-[HOOKS.md](HOOKS.md) is the canonical specification. v1 implements
-`source: claude-code` plus writers for `cursor` and `codex`; the source is
-always read-only. The per-tool path table in §4 above remains the source of
-truth for filesystem locations.
+### Skills
+Source-driven. Skills follow the cross-tool agentskills.io shape — every
+writer symlinks the source `<name>/SKILL.md` directory into the target's
+native location (no content transformation). v1 sources: `claude-code`.
+v1 writers: `cursor`, `codex` (via `.agents/`), `copilot`, `gemini-cli`,
+`junie`, `antigravity` (singular `.agent/`).
+
+### Agents
+Source-driven. Markdown-with-frontmatter on most targets; **Codex
+requires TOML** so its writer materializes (instead of symlinking) and
+drops Claude-only frontmatter keys (`permissionMode`, `hooks`,
+`mcpServers`) with warnings. **Copilot** writes `<name>.agent.md`
+(suffix differs from `.md`). **Antigravity** uses a single root
+`agents.md` file, so the writer skips every per-agent definition with a
+warning. v1 sources: `claude-code`. v1 writers: `cursor`, `codex`,
+`copilot`, `gemini-cli`, `junie`, `antigravity` (skip).
+
+### Slash commands
+Out of scope for the source-driven pipeline. Both Claude Code and Codex
+are deprecating commands in favor of skills, and the per-target
+translation cost is the worst of any capability (TOML for Gemini, plain
+text for Antigravity, `.prompt.md` for Copilot). Plugin authors who need
+commands can still ship them as raw files — agentenv will not propagate.
 
 ### MCP
-
-Same story as hooks: protocol is shared but config shape varies. Cursor and
-Claude Code MCP JSON is interoperable. Codex needs TOML translation. Defer.
+Same story as hooks: protocol is shared but config shape varies. Cursor
+and Claude Code MCP JSON is interoperable. Codex needs TOML translation.
+Deferred to a follow-up source-driven implementation.
 
 ### Anti-recommendations
 
 * **Drop `jetbrains` from defaults.** JetBrains AI Assistant has no
-  file-system skill convention. Use `junie` for the agentic JetBrains product.
-* **Don't pretend `commands/` and `agents/` are universal.** Most non-Claude
-  targets either lack the concept or have incompatible formats.
-* **Don't auto-translate Markdown subagents to Codex TOML.** That's a content
-  transformation, not a sync. Leave it to plugin authors.
+  file-system skill convention. Use `junie` for the agentic JetBrains
+  product.
+* **Don't auto-translate Markdown subagents to Codex TOML without
+  refuse-on-conflict.** The Codex writer manages the destination file
+  exclusively (sentinel header). Manual edits to `.codex/agents/*.toml`
+  are not preserved on resync.
 
 ---
 

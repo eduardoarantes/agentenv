@@ -116,33 +116,21 @@ impl PluginResolver {
         grouped
     }
 
-    /// Get plugins grouped by target tool
-    ///
-    /// # Arguments
-    ///
-    /// * `config` - Configuration with targets
-    /// * `resolved` - Resolved plugins
-    ///
-    /// # Returns
-    ///
-    /// Plugins mapped to their target tools
+    /// One-to-one mapping of every configured target name to itself.
+    /// Kept for API compatibility with callers that still want a
+    /// "tool → target" view; in the source-driven model these are now
+    /// always the same string.
     pub fn group_by_target(
         config: &Config,
         _resolved: &[ResolvedPlugin],
     ) -> HashMap<String, Vec<String>> {
         let mut grouped = HashMap::new();
-
         for target_name in config.target_names() {
-            if let Some(target) = config.get_target(target_name) {
-                for tool in &target.tools {
-                    grouped
-                        .entry(tool.clone())
-                        .or_insert_with(Vec::new)
-                        .push(target_name.to_string());
-                }
-            }
+            grouped
+                .entry(target_name.to_string())
+                .or_insert_with(Vec::new)
+                .push(target_name.to_string());
         }
-
         grouped
     }
 }
@@ -150,8 +138,7 @@ impl PluginResolver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::MarketplaceConfig;
-    use crate::targets::TargetDefaults;
+    use crate::config::{MarketplaceConfig, TargetConfig};
     use std::collections::HashMap;
     use std::fs;
     use std::path::PathBuf;
@@ -169,7 +156,7 @@ mod tests {
         );
 
         let mut targets = HashMap::new();
-        targets.insert("claude-code".to_string(), TargetDefaults::claude_code());
+        targets.insert("cursor".to_string(), TargetConfig::default());
 
         Config {
             version: 1,
@@ -178,10 +165,8 @@ mod tests {
             targets,
             sync: Default::default(),
             clean: Default::default(),
-            use_claude_config: false,
             gitignore_managed_links: false,
             instruction_files: std::collections::HashMap::new(),
-            claude_hooks: None,
             source: None,
         }
     }
@@ -328,7 +313,7 @@ mod tests {
         let resolved = vec![];
 
         let grouped = PluginResolver::group_by_target(&config, &resolved);
-        assert!(grouped.contains_key("claude-code"));
-        assert_eq!(grouped.get("claude-code").unwrap()[0], "claude-code");
+        assert!(grouped.contains_key("cursor"));
+        assert_eq!(grouped.get("cursor").unwrap()[0], "cursor");
     }
 }

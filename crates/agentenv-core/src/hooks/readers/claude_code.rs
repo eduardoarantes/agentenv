@@ -1,7 +1,11 @@
-//! Read Claude Code hooks from `Config::claude_hooks` and produce the
-//! canonical model.
+//! Read Claude Code hooks directly from `<project>/.claude/settings.json`
+//! and produce the canonical model.
 //!
-//! Input shape (verbatim Claude `settings.json` `hooks` value):
+//! Source-driven contract: when `source: claude-code` is set, this reader
+//! is the single source of truth for hooks — it reads the project's
+//! `settings.json` from disk on every pipeline run.
+//!
+//! Input shape (the `hooks` value inside `settings.json`):
 //!
 //! ```jsonc
 //! {
@@ -19,18 +23,32 @@
 //! [`NativeEvent`] preserving the raw matcher block, so the canonical
 //! artifact is lossless.
 
-use crate::config::Config;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::hooks::types::{Action, Canonical, CommonEvent, Event, Hook, Matcher, NativeEvent};
 use serde_json::Value;
+use std::path::Path;
 
 const SOURCE_NAME: &str = "claude-code";
 
-/// Build the canonical from `config.claude_hooks`. Returns `Ok(None)` when
-/// no hooks are present; otherwise the canonical contains one [`Hook`] per
-/// inner action across every event key.
-pub fn read(config: &Config) -> Result<Option<Canonical>> {
-    let Some(raw) = config.claude_hooks.as_ref() else {
+/// Build the canonical by reading `<project_root>/.claude/settings.json`.
+/// Returns `Ok(None)` when the file is absent or has no `hooks` block;
+/// otherwise the canonical contains one [`Hook`] per inner action across
+/// every event key. Returns `Err` only when the file is present but
+/// malformed.
+pub fn read(project_root: &Path) -> Result<Option<Canonical>> {
+    let settings_path = project_root.join(".claude").join("settings.json");
+    let content = match std::fs::read_to_string(&settings_path) {
+        Ok(c) => c,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(Error::Io(err)),
+    };
+    let parsed: Value = serde_json::from_str(&content).map_err(|err| {
+        Error::Config(format!(
+            "failed to parse {}: {err}",
+            settings_path.display()
+        ))
+    })?;
+    let Some(raw) = parsed.get("hooks") else {
         return Ok(None);
     };
     let Value::Object(events) = raw else {
@@ -150,42 +168,48 @@ fn parse_action(value: &Value) -> Option<Action> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
     use serde_json::json;
-    use std::collections::HashMap;
+    use tempfile::TempDir;
 
-    fn config_with_hooks(value: Value) -> Config {
-        Config {
-            version: 1,
-            marketplaces: HashMap::new(),
-            plugins: vec![],
-            targets: HashMap::new(),
-            sync: Default::default(),
-            clean: Default::default(),
-            use_claude_config: true,
-            gitignore_managed_links: false,
-            instruction_files: HashMap::new(),
-            claude_hooks: Some(value),
-            source: Some("claude-code".to_string()),
-        }
+    /// Build a project root with `.claude/settings.json` whose top-level
+    /// `hooks` key equals `hooks_value`. Returns the TempDir so the caller
+    /// keeps it alive for the duration of the test.
+    fn project_with_hooks(hooks_value: Value) -> TempDir {
+        let project = TempDir::new().unwrap();
+        let claude_dir = project.path().join(".claude");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        std::fs::write(
+            claude_dir.join("settings.json"),
+            json!({ "hooks": hooks_value }).to_string(),
+        )
+        .unwrap();
+        project
     }
 
     #[test]
-    fn read_returns_none_when_no_hooks() {
-        let mut config = config_with_hooks(json!({}));
-        config.claude_hooks = None;
-        assert!(read(&config).unwrap().is_none());
+    fn read_returns_none_when_settings_json_absent() {
+        let project = TempDir::new().unwrap();
+        assert!(read(project.path()).unwrap().is_none());
+    }
+
+    #[test]
+    fn read_returns_none_when_no_hooks_key() {
+        let project = TempDir::new().unwrap();
+        let claude_dir = project.path().join(".claude");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        std::fs::write(claude_dir.join("settings.json"), "{}").unwrap();
+        assert!(read(project.path()).unwrap().is_none());
     }
 
     #[test]
     fn read_returns_none_when_empty_object() {
-        let config = config_with_hooks(json!({}));
-        assert!(read(&config).unwrap().is_none());
+        let project = project_with_hooks(json!({}));
+        assert!(read(project.path()).unwrap().is_none());
     }
 
     #[test]
     fn maps_pretooluse_with_matcher_to_common_event() {
-        let config = config_with_hooks(json!({
+        let project = project_with_hooks(json!({
             "PreToolUse": [
                 {
                     "matcher": "Bash",
@@ -195,7 +219,7 @@ mod tests {
                 }
             ]
         }));
-        let canonical = read(&config).unwrap().unwrap();
+        let canonical = read(project.path()).unwrap().unwrap();
         assert_eq!(canonical.source, "claude-code");
         assert_eq!(canonical.hooks.len(), 1);
         let hook = &canonical.hooks[0];
@@ -213,7 +237,7 @@ mod tests {
 
     #[test]
     fn preserves_unknown_event_as_native() {
-        let config = config_with_hooks(json!({
+        let project = project_with_hooks(json!({
             "PreCompact": [
                 {
                     "matcher": ".*",
@@ -224,7 +248,7 @@ mod tests {
                 {"matcher": "*", "hooks": [{"type": "command", "command": "echo idle"}]}
             ]
         }));
-        let canonical = read(&config).unwrap().unwrap();
+        let canonical = read(project.path()).unwrap().unwrap();
         assert_eq!(canonical.hooks.len(), 2);
 
         // PreCompact IS in the common-core catalog — should map to Common.
@@ -254,7 +278,7 @@ mod tests {
 
     #[test]
     fn fans_out_multiple_inner_actions_to_separate_hooks() {
-        let config = config_with_hooks(json!({
+        let project = project_with_hooks(json!({
             "Stop": [
                 {
                     "matcher": ".*",
@@ -265,7 +289,7 @@ mod tests {
                 }
             ]
         }));
-        let canonical = read(&config).unwrap().unwrap();
+        let canonical = read(project.path()).unwrap().unwrap();
         assert_eq!(canonical.hooks.len(), 2);
         let cmds: Vec<&str> = canonical
             .hooks
@@ -285,11 +309,23 @@ mod tests {
             "Stop": [{"matcher": ".*", "hooks": [{"type": "command", "command": "z"}]}],
             "PreToolUse": [{"matcher": "Write", "hooks": [{"type": "command", "command": "a"}]}]
         });
-        let a = read(&config_with_hooks(raw.clone())).unwrap().unwrap();
-        let b = read(&config_with_hooks(raw)).unwrap().unwrap();
+        let p_a = project_with_hooks(raw.clone());
+        let p_b = project_with_hooks(raw);
+        let a = read(p_a.path()).unwrap().unwrap();
+        let b = read(p_b.path()).unwrap().unwrap();
         assert_eq!(a, b);
         // Sorted keys → PreToolUse comes before Stop.
         assert_eq!(a.hooks[0].event.name(), "PreToolUse");
         assert_eq!(a.hooks[1].event.name(), "Stop");
+    }
+
+    #[test]
+    fn malformed_settings_json_returns_config_error() {
+        let project = TempDir::new().unwrap();
+        let claude_dir = project.path().join(".claude");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        std::fs::write(claude_dir.join("settings.json"), "not json").unwrap();
+        let err = read(project.path()).unwrap_err();
+        assert!(err.to_string().contains("failed to parse"));
     }
 }

@@ -9,21 +9,32 @@ fn agentenv() -> Command {
 }
 
 /// Append a plugin to a Claude Code-style marketplace at `marketplace`.
+/// Plugins are always parsed as Claude-shaped (skills directory-form,
+/// agents flat-file Markdown — see the plan). Commands are deferred and
+/// not generated here.
 fn write_plugin(marketplace: &Path, name: &str, capabilities: &[&str]) {
     let plugin_dir = marketplace.join(name);
     for capability in capabilities {
         let cap_dir = plugin_dir.join(capability);
         fs::create_dir_all(&cap_dir).unwrap();
-        if *capability == "skills" {
-            let skill_dir = cap_dir.join("demo-skill");
-            fs::create_dir_all(&skill_dir).unwrap();
-            fs::write(
-                skill_dir.join("SKILL.md"),
-                "---\nname: demo-skill\ndescription: test\n---\n",
-            )
-            .unwrap();
-        } else {
-            fs::write(cap_dir.join("demo-leaf.md"), "leaf body\n").unwrap();
+        match *capability {
+            "skills" => {
+                let skill_dir = cap_dir.join("demo-skill");
+                fs::create_dir_all(&skill_dir).unwrap();
+                fs::write(
+                    skill_dir.join("SKILL.md"),
+                    "---\nname: demo-skill\ndescription: test\n---\n",
+                )
+                .unwrap();
+            },
+            "agents" => {
+                fs::write(
+                    cap_dir.join("demo-agent.md"),
+                    "---\nname: demo-agent\ndescription: test\n---\nprompt\n",
+                )
+                .unwrap();
+            },
+            _ => {},
         }
     }
 
@@ -55,6 +66,23 @@ fn write_plugin(marketplace: &Path, name: &str, capabilities: &[&str]) {
         "plugins": entries,
     });
     fs::write(&index_path, serde_json::to_string_pretty(&index).unwrap()).unwrap();
+}
+
+fn write_config(project: &Path, marketplace: &Path, plugin_lines: &str) {
+    let config = format!(
+        r#"version: 1
+source: claude-code
+marketplaces:
+  default:
+    path: {marketplace}
+    remote: https://example.com/marketplace.git
+plugins:
+{plugin_lines}targets:
+  cursor: {{}}
+"#,
+        marketplace = marketplace.display()
+    );
+    fs::write(project.join(".agentrc.yaml"), config).unwrap();
 }
 
 #[test]
@@ -125,39 +153,25 @@ fn init_force_overwrites_existing_config() {
 }
 
 #[test]
-fn sync_links_local_marketplace_plugin_into_target() {
+fn sync_links_marketplace_skill_into_cursor() {
     let marketplace = TempDir::new().unwrap();
     let project = TempDir::new().unwrap();
-    write_plugin(marketplace.path(), "demo", &["skills", "commands"]);
-
-    let config = format!(
-        r#"version: 1
-marketplaces:
-  default:
-    path: {marketplace}
-    remote: https://example.com/marketplace.git
-plugins:
-  - name: demo
-targets:
-  claude-code: {{}}
-"#,
-        marketplace = marketplace.path().display()
-    );
-    fs::write(project.path().join(".agentrc.yaml"), config).unwrap();
+    write_plugin(marketplace.path(), "demo", &["skills", "agents"]);
+    write_config(project.path(), marketplace.path(), "  - name: demo\n");
 
     agentenv()
         .args(["--project", project.path().to_str().unwrap(), "sync"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("linked"));
+        .stdout(predicate::str::contains("installed"));
 
     assert!(project
         .path()
-        .join(".claude/skills/demo-skill")
+        .join(".cursor/skills/demo-skill")
         .is_symlink());
     assert!(project
         .path()
-        .join(".claude/commands/demo-leaf.md")
+        .join(".cursor/agents/demo-agent.md")
         .is_symlink());
 }
 
@@ -166,21 +180,7 @@ fn sync_is_idempotent_via_cli() {
     let marketplace = TempDir::new().unwrap();
     let project = TempDir::new().unwrap();
     write_plugin(marketplace.path(), "demo", &["skills"]);
-
-    let config = format!(
-        r#"version: 1
-marketplaces:
-  default:
-    path: {marketplace}
-    remote: https://example.com/marketplace.git
-plugins:
-  - name: demo
-targets:
-  claude-code: {{}}
-"#,
-        marketplace = marketplace.path().display()
-    );
-    fs::write(project.path().join(".agentrc.yaml"), config).unwrap();
+    write_config(project.path(), marketplace.path(), "  - name: demo\n");
 
     let project_arg = project.path().to_str().unwrap();
     agentenv()
@@ -194,7 +194,7 @@ targets:
 
     assert!(project
         .path()
-        .join(".claude/skills/demo-skill")
+        .join(".cursor/skills/demo-skill")
         .is_symlink());
 }
 
@@ -208,28 +208,12 @@ fn sync_fails_when_config_missing() {
         .stderr(predicate::str::contains(".agentrc.yaml"));
 }
 
-fn write_config_with_plugins(project: &Path, marketplace: &Path, plugin_lines: &str) {
-    let config = format!(
-        r#"version: 1
-marketplaces:
-  default:
-    path: {marketplace}
-    remote: https://example.com/marketplace.git
-plugins:
-{plugin_lines}targets:
-  claude-code: {{}}
-"#,
-        marketplace = marketplace.display()
-    );
-    fs::write(project.join(".agentrc.yaml"), config).unwrap();
-}
-
 #[test]
 fn list_prints_marketplaces_plugins_and_targets() {
     let marketplace = TempDir::new().unwrap();
     let project = TempDir::new().unwrap();
     write_plugin(marketplace.path(), "demo", &["skills"]);
-    write_config_with_plugins(project.path(), marketplace.path(), "  - name: demo\n");
+    write_config(project.path(), marketplace.path(), "  - name: demo\n");
 
     agentenv()
         .args(["--project", project.path().to_str().unwrap(), "list"])
@@ -239,25 +223,29 @@ fn list_prints_marketplaces_plugins_and_targets() {
         .stdout(predicate::str::contains("Plugins:"))
         .stdout(predicate::str::contains("demo"))
         .stdout(predicate::str::contains("Targets:"))
+        .stdout(predicate::str::contains("cursor"))
+        .stdout(predicate::str::contains("Source:"))
         .stdout(predicate::str::contains("claude-code"));
 }
 
 #[test]
-fn explain_describes_planned_actions_without_writing() {
+fn explain_reports_instruction_file_plan_and_capability_note() {
     let marketplace = TempDir::new().unwrap();
     let project = TempDir::new().unwrap();
     write_plugin(marketplace.path(), "demo", &["skills"]);
-    write_config_with_plugins(project.path(), marketplace.path(), "  - name: demo\n");
+    write_config(project.path(), marketplace.path(), "  - name: demo\n");
 
+    // v1 explain only fully describes instruction-file propagation; the
+    // capability writers evaluate at sync time. Verify the explanatory
+    // warning is surfaced so users know to run sync for the full picture.
     agentenv()
         .args(["--project", project.path().to_str().unwrap(), "explain"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("would link"))
-        .stdout(predicate::str::contains("demo-skill"));
+        .stdout(predicate::str::contains("capability writers"));
 
     // Explain must not have created links or a state file.
-    assert!(!project.path().join(".claude/skills/demo-skill").exists());
+    assert!(!project.path().join(".cursor/skills/demo-skill").exists());
     assert!(!project.path().join(".agentenv/state.json").exists());
 }
 
@@ -266,7 +254,7 @@ fn doctor_passes_after_a_successful_sync() {
     let marketplace = TempDir::new().unwrap();
     let project = TempDir::new().unwrap();
     write_plugin(marketplace.path(), "demo", &["skills"]);
-    write_config_with_plugins(project.path(), marketplace.path(), "  - name: demo\n");
+    write_config(project.path(), marketplace.path(), "  - name: demo\n");
 
     let project_arg = project.path().to_str().unwrap();
     agentenv()
@@ -284,7 +272,7 @@ fn doctor_passes_after_a_successful_sync() {
 fn doctor_fails_when_marketplace_directory_missing() {
     let project = TempDir::new().unwrap();
     let phantom = project.path().join("does/not/exist");
-    write_config_with_plugins(project.path(), &phantom, "");
+    write_config(project.path(), &phantom, "");
 
     agentenv()
         .args(["--project", project.path().to_str().unwrap(), "doctor"])
@@ -298,7 +286,7 @@ fn clean_removes_links_and_state_after_sync() {
     let marketplace = TempDir::new().unwrap();
     let project = TempDir::new().unwrap();
     write_plugin(marketplace.path(), "demo", &["skills"]);
-    write_config_with_plugins(project.path(), marketplace.path(), "  - name: demo\n");
+    write_config(project.path(), marketplace.path(), "  - name: demo\n");
 
     let project_arg = project.path().to_str().unwrap();
     agentenv()
@@ -307,7 +295,7 @@ fn clean_removes_links_and_state_after_sync() {
         .success();
     assert!(project
         .path()
-        .join(".claude/skills/demo-skill")
+        .join(".cursor/skills/demo-skill")
         .is_symlink());
 
     agentenv()
@@ -316,8 +304,45 @@ fn clean_removes_links_and_state_after_sync() {
         .success()
         .stdout(predicate::str::contains("removed"));
 
-    assert!(!project.path().join(".claude/skills/demo-skill").exists());
+    assert!(!project.path().join(".cursor/skills/demo-skill").exists());
     assert!(!project.path().join(".agentenv/state.json").exists());
+}
+
+#[test]
+fn canonical_show_prints_skills_canonical_after_sync() {
+    let marketplace = TempDir::new().unwrap();
+    let project = TempDir::new().unwrap();
+    write_plugin(marketplace.path(), "demo", &["skills"]);
+    write_config(project.path(), marketplace.path(), "  - name: demo\n");
+
+    let project_arg = project.path().to_str().unwrap();
+    agentenv()
+        .args(["--project", project_arg, "sync"])
+        .assert()
+        .success();
+
+    agentenv()
+        .args(["--project", project_arg, "canonical", "show", "skills"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("source: claude-code"))
+        .stdout(predicate::str::contains("demo-skill"));
+}
+
+#[test]
+fn canonical_show_fails_when_artifact_missing() {
+    let project = TempDir::new().unwrap();
+    agentenv()
+        .args([
+            "--project",
+            project.path().to_str().unwrap(),
+            "canonical",
+            "show",
+            "skills",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("run `agentenv sync` first"));
 }
 
 #[test]
@@ -325,7 +350,7 @@ fn sync_removes_stale_links_when_plugin_dropped_from_config() {
     let marketplace = TempDir::new().unwrap();
     let project = TempDir::new().unwrap();
     write_plugin(marketplace.path(), "demo", &["skills"]);
-    write_config_with_plugins(project.path(), marketplace.path(), "  - name: demo\n");
+    write_config(project.path(), marketplace.path(), "  - name: demo\n");
 
     let project_arg = project.path().to_str().unwrap();
     agentenv()
@@ -334,16 +359,16 @@ fn sync_removes_stale_links_when_plugin_dropped_from_config() {
         .success();
     assert!(project
         .path()
-        .join(".claude/skills/demo-skill")
+        .join(".cursor/skills/demo-skill")
         .is_symlink());
 
-    // Drop the plugin from the config and resync — the stale link should be
-    // removed automatically.
-    write_config_with_plugins(project.path(), marketplace.path(), "");
+    // Drop the plugin from the config and resync — the stale link should
+    // be removed automatically.
+    write_config(project.path(), marketplace.path(), "");
     agentenv()
         .args(["--project", project_arg, "sync"])
         .assert()
         .success();
 
-    assert!(!project.path().join(".claude/skills/demo-skill").exists());
+    assert!(!project.path().join(".cursor/skills/demo-skill").exists());
 }

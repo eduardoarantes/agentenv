@@ -145,6 +145,11 @@ This creates:
 # .agentrc.yaml
 version: 1
 
+# Source-of-truth tool. agentenv reads its native layout losslessly and
+# renders the canonical out to every other configured target. v1 supports
+# `claude-code` as the source.
+source: claude-code
+
 marketplaces:
   default:
     path: ~/.agentenv/marketplace
@@ -152,16 +157,21 @@ marketplaces:
     ref: main
 
 # Add plugin entries here, e.g.:
-#   - name: engineering-standards
+#   - name: git-simple
 plugins: []
 
+# Tools to materialize the canonical for. `claude-code` is the source and
+# is never written. Opt in by uncommenting.
 targets:
-  claude-code: {}
+  cursor: {}
+  # codex: {}
+  # copilot: {}
+  # gemini-cli: {}
+  # junie: {}
 
 sync:
   onOpen: true
   refetch: true
-  mode: symlink
 ```
 
 The plugin list is empty so the first `agentenv sync` succeeds — open
@@ -195,11 +205,13 @@ agentenv doctor
 ```yaml
 version: 1
 
-# Import marketplaces, plugins, and hooks from Claude Code's settings.json.
-# When true, the `claude-code` target is dropped from sync (Claude is then
-# the source of truth, not a destination). See "Importing from Claude Code"
-# below.
-use_claude_config: false
+# Source of truth for hooks, skills, and agents. agentenv reads the named
+# tool's native layout losslessly into .agentenv/<capability>.canonical.yaml
+# and renders that canonical out to every other configured target. Setting
+# `source: claude-code` also implicitly imports marketplaces / plugins from
+# `~/.claude/settings.json` and `<project>/.claude/settings.json` (missing
+# files are tolerated). See "Importing from Claude Code" below.
+source: claude-code
 
 marketplaces:
   default:
@@ -212,14 +224,15 @@ plugins:
   - name: pr-review
   - name: engineering-standards
 
+# Set-membership map of write targets. Per-target object is currently `{}`;
+# the source target is never written, even if listed.
 targets:
-  claude-code: {}
   cursor: {}
+  codex: {}
 
 sync:
   onOpen: true
   refetch: true
-  mode: symlink
 
 clean:
   pruneEmptyDirs: true
@@ -230,57 +243,69 @@ clean:
 | Field | Required | Description |
 |---|---:|---|
 | `version` | Yes | Config schema version. |
-| `use_claude_config` | No | Import `extraKnownMarketplaces`, `enabledPlugins`, and `hooks` from `~/.claude/settings.json` and `<project>/.claude/settings.json`. Project Claude wins over global; explicit `.agentrc.yaml` entries win over both. When enabled, the `claude-code` target is dropped from sync because Claude reads its own `.claude/` directly. Defaults to `false`. See [Importing from Claude Code](#importing-from-claude-code) below. |
+| `source` | Yes² | Source-of-truth tool for the canonical pipelines. v1 supports `claude-code`. Setting `source: claude-code` also implicitly imports `extraKnownMarketplaces` and `enabledPlugins` from `~/.claude/settings.json` and `<project>/.claude/settings.json` (project wins over global; explicit `.agentrc.yaml` entries win over both). The source target is read-only and is dropped from `targets:` during sync if listed. See [Importing from Claude Code](#importing-from-claude-code) below. |
 | `marketplaces` | Yes¹ | Marketplace repos keyed by namespace. |
 | `marketplaces.<namespace>.path` | Yes | Local cache directory where agentenv clones the marketplace repo (from `remote` at `ref`). It's not a path inside the project — it's an agentenv-managed checkout used as a read-only source. Supports `~` (home), absolute paths, and relative paths (resolved against the project root). Refetches reset the working tree to `origin/<ref>`, so don't hand-edit anything inside it. A common choice is `~/.agentenv/marketplace` to share the cache across projects. |
 | `marketplaces.<namespace>.remote` | Yes | Git remote used to clone/fetch the marketplace. |
 | `marketplaces.<namespace>.ref` | No | Branch, tag, or commit to use. Defaults to `main`. |
 | `plugins` | No | List of plugins to import. A plugin without `namespace` uses `default`. |
-| `targets` | Yes | Object of tool adapters keyed by target name. Empty target configs use built-in defaults when available. |
+| `targets` | No | Set-membership map of tools to materialize the canonical for. Each per-target object is currently `{}` — listing a target opts it in; path conventions live inside each capability's writers module. Recognised names: `claude-code`, `cursor`, `codex`, `copilot`, `gemini-cli`, `junie`, `antigravity`. Required when at least one capability needs propagation; `source:` is required whenever `targets:` is non-empty. |
 | `sync.onOpen` | No | Whether editor integrations should sync on workspace open. |
 | `sync.refetch` | No | Whether to fetch marketplace updates before syncing. |
-| `sync.mode` | No | Link strategy. Initially `symlink`. |
 | `clean.pruneEmptyDirs` | No | After `agentenv clean` removes managed links, prune any now-empty directories inside the project root. Stops at the project root and never touches dirs that still hold user files. Defaults to `true`. |
 | `gitignore_managed_links` | No | When `true`, agentenv maintains a sentinel-delimited block in `<project>/.gitignore` listing every link/copy it currently owns. User-authored `.gitignore` lines outside the block are preserved verbatim. `agentenv clean` strips the block entirely. See [Auto-gitignoring managed links](#auto-gitignoring-managed-links) below. |
 | `instruction_files` | No | Map of root-level source files (`CLAUDE.md`, `AGENTS.md`, `CURSOR.md`, …) to lists of project-relative destination paths. agentenv symlinks each source into each destination. **Never overrides** existing user files; agentenv-managed symlinks are updated when the source changes. See [Propagating instruction files](#propagating-instruction-files) below. |
 
-¹ `marketplaces` may be omitted when `use_claude_config: true` provides at
-least one marketplace via Claude's `extraKnownMarketplaces`.
+¹ `marketplaces` may be omitted when `source: claude-code` is set and
+Claude's `settings.json` provides at least one `extraKnownMarketplaces`
+entry.
+
+² `source` is required whenever `targets:` is non-empty (every capability
+pipeline needs somewhere to read from). v1 only implements `claude-code`
+as a source — setting any other value fails validation.
 
 ### Importing from Claude Code
 
-If you already manage marketplaces and plugins through Claude Code, set
-`use_claude_config: true` and skip the duplication. `agentenv` reads
-`extraKnownMarketplaces` and `enabledPlugins` from both
-`~/.claude/settings.json` and `<project>/.claude/settings.json`, layers them
-(project beats global), and uses the result as if you had written it in
-`.agentrc.yaml`. Anything you do write here still wins.
+Setting `source: claude-code` does double duty:
+
+1. It declares Claude as the source of truth for the **canonical
+   pipelines** — agentenv reads `.claude/settings.json` (hooks),
+   `.claude/skills/` and `.claude/agents/` losslessly into
+   `.agentenv/<capability>.canonical.yaml` and renders them out to every
+   other configured write target.
+2. It implicitly imports Claude's `extraKnownMarketplaces` and
+   `enabledPlugins` from both `~/.claude/settings.json` and
+   `<project>/.claude/settings.json` (project beats global; explicit
+   `.agentrc.yaml` entries win over both). Missing settings.json files
+   are tolerated.
 
 ```yaml
 version: 1
-use_claude_config: true
+source: claude-code
 
-# Propagate Claude's plugins to your other tools. The claude-code target is
-# dropped automatically — Claude reads its own .claude/ directly.
+# Propagate Claude's plugins, skills, agents, and hooks to your other
+# tools. The claude-code target is the source — listing it has no effect.
 targets:
   cursor: {}
   codex: {}
 ```
 
-Inspect what got imported with [`agentenv claude-config show`](#agentenv-claude-config-show).
+Inspect what got imported with [`agentenv claude-config show`](#agentenv-claude-config-show)
+and the generated canonical with [`agentenv canonical show`](#agentenv-canonical-show).
 
-**Local assets too.** When `use_claude_config: true`, agentenv also treats
-your project's `<project>/.claude/{agents,skills,commands}/` directories as a
-synthetic plugin and propagates each leaf to your other targets. A file at
-`.claude/agents/code-reviewer.md` ends up at `.cursor/agents/code-reviewer.md`
-(and any other target whose defaults declare an `agents` mapping). Targets
-without a mapping for a given capability simply skip it — cursor doesn't
-have a documented project-level commands path, so `.claude/commands/` files
-don't go anywhere on cursor.
+**Local assets are first-class.** With `source: claude-code`, your
+project's `<project>/.claude/{agents,skills}/` directories ARE the source
+— agentenv reads them directly into the canonical and writes each one out
+to every configured target. A skill at `.claude/skills/refactor/SKILL.md`
+materializes at `.cursor/skills/refactor/SKILL.md`,
+`.codex/skills/refactor/SKILL.md` (via `.agents/`), and so on. Subagents
+defined in `.claude/agents/<name>.md` go through the same flow, with the
+Codex writer transforming Markdown frontmatter to TOML and reporting any
+fields it had to drop.
 
-Hooks are read and surfaced through `claude-config show` but are **not**
-written back to disk in this release — Claude Code already resolves global +
-project hooks at runtime.
+Hooks come from the merged `~/.claude/settings.json` + project
+`settings.json` `hooks` block. The writers are documented in
+[docs/HOOKS.md](docs/HOOKS.md).
 
 ### Propagating instruction files
 
@@ -290,9 +315,9 @@ places — Claude Code reads `CLAUDE.md`, Codex/Cursor/Copilot read
 and so on. Rather than duplicate the same content N times, point at a single
 source file and let agentenv mirror it everywhere.
 
-#### Automatic defaults (`use_claude_config: true`)
+#### Automatic defaults (`source: claude-code`)
 
-When `use_claude_config: true` is set and you haven't written your own
+When `source: claude-code` is set and you haven't written your own
 `instruction_files:` block, agentenv applies a sensible default: it uses
 `CLAUDE.md` (or `AGENTS.md` if no `CLAUDE.md` exists) as the source and
 propagates it to each configured target's expected instruction-sheet path:
@@ -309,7 +334,7 @@ So a minimal config like
 
 ```yaml
 version: 1
-use_claude_config: true
+source: claude-code
 targets:
   cursor: {}
   junie: {}
@@ -361,7 +386,7 @@ your `.gitignore` honest:
 
 ```yaml
 version: 1
-use_claude_config: true
+source: claude-code
 gitignore_managed_links: true
 targets:
   cursor: {}
@@ -499,8 +524,8 @@ root and never touches dirs that still hold user files. Disable via
 ### `agentenv claude-config show`
 
 Print the marketplaces, plugins, and hooks `agentenv` would import from your
-Claude `settings.json` files. Useful for debugging
-`use_claude_config: true`.
+Claude `settings.json` files. Useful for debugging the implicit Claude
+settings import that runs whenever `source: claude-code` is set.
 
 ```bash
 agentenv claude-config show          # human-readable
@@ -509,8 +534,26 @@ agentenv claude-config show --json   # machine-readable
 
 This command reads `~/.claude/settings.json` and
 `<project>/.claude/settings.json` directly — it does not require
-`use_claude_config: true` to be set in `.agentrc.yaml`, so you can preview
-the import before enabling the flag.
+`source: claude-code` to be set in `.agentrc.yaml`, so you can preview the
+import before flipping the switch.
+
+---
+
+### `agentenv canonical show`
+
+Print the canonical YAML agentenv generated for a capability under
+`<project>/.agentenv/<capability>.canonical.yaml`. Useful for inspecting
+what the source reader actually captured before the writers materialize
+it to each target.
+
+```bash
+agentenv canonical show skills
+agentenv canonical show agents
+agentenv canonical show hooks
+```
+
+Errors out with a helpful message if no canonical exists yet — run
+`agentenv sync` first.
 
 ---
 
@@ -537,27 +580,44 @@ The marketplace is not owned by `agentenv`. It is consumed as an external source
 
 ## Target adapters
 
-Each AI tool is supported through a target adapter.
+agentenv is **source-driven**: one tool is declared the source of truth
+(`source: claude-code` in v1) and each other listed target receives the
+capability via a per-capability writer module under
+`crates/agentenv-core/src/<capability>/writers/`. Each writer owns:
 
-Adapters define:
+- the destination path on disk
+- format translation (e.g. Codex's agent files are TOML, not Markdown)
+- refuse-on-conflict detection so agentenv never clobbers user-authored
+  content
+- a `drops` report so any field/event a target cannot represent is
+  surfaced in the sync output rather than silently lost
 
-- where agents go
-- where commands go
-- where skills go
-- whether hooks are supported
-- whether symlinks or copies are required
-- compatibility rules
-
-Example internal layout:
+Internal layout (one module per capability):
 
 ```text
-src/
-  targets/
-    claude_code.rs
-    codex.rs
-    cursor.rs
-    copilot.rs
+crates/agentenv-core/src/
+  hooks/
+    readers/{claude_code.rs, mod.rs}
+    writers/{cursor.rs, codex.rs, mod.rs}
+    canonical_io.rs
+    pipeline.rs
+  skills/
+    readers/{claude_code.rs, mod.rs}
+    writers/mod.rs       # symlink writer for all targets
+    ...
+  agents/
+    readers/{claude_code.rs, mod.rs}
+    writers/{codex.rs, mod.rs}   # codex.rs materializes to TOML
+    ...
 ```
+
+v1 source: `claude-code`. v1 write targets:
+
+| Capability | cursor | codex | copilot | gemini-cli | junie | antigravity |
+| --- | --- | --- | --- | --- | --- | --- |
+| skills | ✓ | ✓ (`.agents/`) | ✓ | ✓ | ✓ | ✓ (`.agent/`) |
+| agents | ✓ | ✓ (TOML) | ✓ (`.agent.md`) | ✓ | ✓ | skip |
+| hooks  | ✓ | ✓ (`~/.codex/config.toml`) | — | — | — | — |
 
 ---
 
@@ -620,7 +680,8 @@ Shipped:
 - [x] JSON Schema for `.agentrc.yaml` (`schemas/agentrc.schema.json`)
 - [x] VS Code extension
 - [x] Dry-run mode (`agentenv explain`)
-- [x] Import config from Claude Code (`use_claude_config: true`)
+- [x] Import config + propagate capabilities from Claude Code (`source: claude-code`)
+- [x] Source-driven canonical pipelines for hooks, skills, and agents
 - [x] Propagate instruction files (`CLAUDE.md` → `AGENTS.md`, `.junie/AGENTS.md`, …) via `instruction_files`
 - [x] Auto-gitignore managed links (`gitignore_managed_links: true`)
 

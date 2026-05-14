@@ -77,40 +77,46 @@ This file describes the three development areas of agentenv — the Rust CLI (`a
 
 ---
 
-## Configuration-Driven Target System
+## Source-driven canonical pipelines
 
-### Target Definition
-Each target declares the directory under which each capability is installed.
-Sync walks per-leaf: every immediate child of `<plugin>/<capability>/` is
-linked into `<target>/<leaf-name>`. This matches the
-[Agent Skills](https://agentskills.io) convention so tools find skills at
-`<scope>/skills/<name>/SKILL.md` (depth 1).
+`.agentrc.yaml` declares a single `source: <tool>` — currently `claude-code`.
+For every capability (hooks, skills, agents), sync:
 
-The optional `{plugin}` placeholder lets users add per-plugin namespacing on
-top of the leaf name. The bundled defaults don't use it — leaf names are the
-unit of identity. See `docs/platform-standards.md` for the full per-tool path
-reference.
+1. Reads the source's native layout losslessly into a canonical YAML under
+   `<project>/.agentenv/<capability>.canonical.yaml`. Open-map frontmatter
+   plus an explicit `Native`-style escape hatch (for hooks) ensure no
+   information is dropped between source and canonical.
+2. Renders the canonical out to every configured non-source target via
+   per-capability writers. Each writer reports `drops` for fields/items it
+   cannot represent; nothing is silently lost.
 
 ```yaml
+source: claude-code
+
 targets:
-  claude-code:
-    source_mappings:
-      skills:
-        - target: .claude/skills
-      commands:
-        - target: .claude/commands
-      agents:
-        - target: .claude/agents
+  cursor: {}
+  codex: {}
 ```
 
-### Adding New Targets
-To add a new target:
+`TargetConfig` is intentionally empty — opting a target in is enough.
+Path conventions and translation logic live in
+`crates/agentenv-core/src/<capability>/writers/` (one module per
+capability), not in config.
 
-1. Add a method to `crates/agentenv-core/src/targets/defaults.rs`.
-2. Wire it into `TargetDefaults::get` and `available_targets`.
-3. Document the paths in `docs/platform-standards.md`.
-4. Users can now write `targets: <name>: {}` in `.agentrc.yaml` to pull in
-   defaults, or override individual mappings.
+### Adding a new writer
+1. Add a `<target>.rs` (or extend the dispatch in `writers/mod.rs`) under
+   `crates/agentenv-core/src/<capability>/writers/`.
+2. Register it in `write_targets()` and the dispatch `match` in that
+   module's `write` function.
+3. Add the target name to `Config::KNOWN_TARGETS` in
+   `crates/agentenv-core/src/config.rs`.
+4. Document the path/format in `docs/platform-standards.md`.
+
+### Adding a new source reader
+1. Add a `<source>.rs` under `crates/agentenv-core/src/<capability>/readers/`.
+2. Register it in the dispatch `match` in that module's `readers/mod.rs`.
+3. Add the target name to `Config::SOURCE_TARGETS_V1`.
+4. Document the layout in `docs/platform-standards.md`.
 
 ---
 

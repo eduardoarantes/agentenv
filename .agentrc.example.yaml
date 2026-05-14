@@ -1,99 +1,229 @@
+# agentenv configuration — every field documented inline.
+#
+# Source-driven model: pick ONE tool whose native layout is the source of
+# truth, then opt in to the OTHER tools you want agentenv to materialize
+# the canonical for. The source is always read-only; sync never writes
+# back to it.
+
+# Schema version. Only `1` is supported today.
 version: 1
 
-# Import marketplaces, plugins, and hooks from Claude Code's settings.json.
-# When true, agentenv reads `extraKnownMarketplaces` and `enabledPlugins` from
-# both the project's `./.claude/settings.json` and the user's global
-# `~/.claude/settings.json` (project wins on key conflicts) and merges them
-# into the lists below. Anything declared in `marketplaces:` or `plugins:`
-# here wins over what Claude provides.
-#
-# When this is true, the built-in `claude-code` target is dropped from sync
-# because Claude Code is treated as the source of truth — re-syncing into
-# `.claude/skills`, `.claude/commands`, `.claude/agents` would either be a
-# no-op or conflict with files Claude already manages. Use other targets
-# (cursor, codex, copilot, gemini-cli, ...) to propagate Claude's plugins
-# to other tools.
-#
-# Inspect what gets imported with: `agentenv claude-config show`
-use_claude_config: false
 
-# Opt-in to the source-driven hooks pipeline. When set, agentenv reads the
-# named target's existing hooks file losslessly into
-# `.agentenv/hooks.canonical.yaml` and renders that canonical out to every
-# other supporting target (cursor, codex). The named source is ALWAYS
-# read-only — sync never writes back to it. Omit this field if you don't
-# want hooks propagation. See docs/HOOKS.md for the full spec.
+# ─────────────────────────────────────────────────────────────────────
+# source
+# ─────────────────────────────────────────────────────────────────────
+# Source of truth for hooks, skills, and agents. agentenv reads the
+# named target's native layout losslessly into
+# `.agentenv/<capability>.canonical.yaml` and renders that canonical out
+# to every other configured target.
 #
-# v1 sources: claude-code. v1 write targets: cursor, codex.
-# source: claude-code
+# Required when `targets:` is non-empty. The named source is ALWAYS
+# read-only — sync never writes back to it.
+#
+# Possible values (all known target names):
+#   claude-code   ← v1 supported
+#   cursor        ← recognised but NOT implemented as a source in v1
+#   codex         ← recognised but NOT implemented as a source in v1
+#   copilot       ← recognised but NOT implemented as a source in v1
+#   gemini-cli    ← not a documented source target
+#   junie         ← not a documented source target
+#   antigravity   ← not a documented source target
+#
+# Setting `source` to anything except `claude-code` fails validation
+# today; the other entries above are the v2+ slots.
+source: claude-code
 
-# Marketplaces can be configured with namespaces
-# This allows for multiple marketplace sources
+
+# ─────────────────────────────────────────────────────────────────────
+# Claude `settings.json` import (implicit)
+# ─────────────────────────────────────────────────────────────────────
+# When `source: claude-code` is set above, agentenv ALSO reads:
+#   - the user's global `~/.claude/settings.json`
+#   - the project's `./.claude/settings.json`
+# and merges Claude's `extraKnownMarketplaces` / `enabledPlugins` into
+# the lists below (project wins on key conflicts; anything you declare
+# here wins over both). The `claude-code` target — if listed in
+# `targets:` — is dropped from sync, because Claude reads its own
+# `.claude/` directly.
+#
+# Missing settings.json files are NOT an error; the import is best-
+# effort. Inspect what would be imported with:
+#   agentenv claude-config show
+
+
+# ─────────────────────────────────────────────────────────────────────
+# marketplaces
+# ─────────────────────────────────────────────────────────────────────
+# Marketplaces are git repos that publish Claude-shaped plugin bundles.
+# Each marketplace has a namespace (the key). At least one marketplace
+# must be defined, unless `source: claude-code` is set and Claude's
+# settings.json provides `extraKnownMarketplaces`.
+#
+# Per-entry fields:
+#   path    (required) — Local cache path. `~/` is expanded. Relative
+#                        paths are resolved against the project root.
+#   remote  (required) — Git URL to fetch from.
+#   ref     (optional) — Git ref (branch or tag). Defaults to `main`.
 marketplaces:
+  # The bundled community marketplace.
   default:
     path: ~/.agentenv/marketplace
     remote: https://github.com/eduardoarantes/claude-code-plugin-marketplace.git
     ref: main
 
-  # Optional: add custom marketplace
-  custom:
-    path: ~/.agentenv/custom-marketplace
-    remote: https://github.com/myorg/custom-marketplace.git
-    ref: main
+  # Example of a private team marketplace alongside the default.
+  # custom:
+  #   path: ~/.agentenv/custom-marketplace
+  #   remote: https://github.com/myorg/custom-marketplace.git
+  #   ref: main
 
-# Plugins can reference their namespace
-# If namespace is omitted, "default" is used
+
+# ─────────────────────────────────────────────────────────────────────
+# plugins
+# ─────────────────────────────────────────────────────────────────────
+# Plugins to import from a marketplace. All plugins are parsed as
+# Claude-shaped:
+#   <plugin>/skills/<name>/SKILL.md
+#   <plugin>/agents/<name>.md
+#   <plugin>/hooks/hooks.json
+#
+# Per-entry fields:
+#   name       (required) — Plugin directory name inside the marketplace.
+#   namespace  (optional) — Marketplace namespace key. Defaults to
+#                           `default`.
+#   version    (optional) — Plugin version. Defaults to whatever the
+#                           marketplace index publishes.
 plugins:
-  - name: engineering-standards
-    namespace: default
-  - name: python-agents
-    namespace: default
-  - name: pr-review
-    namespace: custom
+  # - name: engineering-standards
+  #   namespace: default
+  # - name: python-agents
+  # - name: pr-review
+  #   namespace: custom
+  #   version: 1.2.0
 
-# Targets define where each capability is installed for each tool. Empty
-# objects pull in the built-in defaults from docs/platform-standards.md;
-# override individual fields to customize.
+
+# ─────────────────────────────────────────────────────────────────────
+# targets
+# ─────────────────────────────────────────────────────────────────────
+# Set-membership map of tools to materialize the canonical for.
+# Empty per-target objects (`cursor: {}`) opt the target in — path
+# conventions and translation rules live inside each capability's
+# writers module, not here.
+#
+# Per-target object: currently `{}`. The struct is reserved for future
+# per-target options (no fields today).
+#
+# Targets you can list:
+#   claude-code   — source tool. Dropped from sync when `source:
+#                   claude-code` is set (Claude reads its own .claude/
+#                   directly). Listing it has no useful effect in v1.
+#   cursor        — skills: ✓   agents: ✓ (Markdown)        hooks: ✓
+#   codex         — skills: ✓ (via .agents/)
+#                   agents: ✓ (TRANSFORMED to TOML — drops Claude-only
+#                              frontmatter keys with warnings)
+#                   hooks:  ✓ (notify block in ~/.codex/config.toml)
+#   copilot       — skills: ✓   agents: ✓ (renamed to *.agent.md)
+#                   hooks:  ✗ (v1 deferred)
+#   gemini-cli    — skills: ✓   agents: ✓ (Markdown)        hooks: ✗
+#   junie         — skills: ✓   agents: ✓ (Markdown)        hooks: ✗
+#   antigravity   — skills: ✓ (singular .agent/)
+#                   agents: dropped with a warning (Antigravity uses a
+#                           single root agents.md, not per-agent files)
+#                   hooks:  ✗ (no public hook convention)
+#
+# Per-tool native destination paths (where agentenv writes):
+#   cursor       skills → .cursor/skills/<name>/SKILL.md
+#                agents → .cursor/agents/<name>.md
+#                hooks  → .cursor/hooks.json
+#   codex        skills → .agents/skills/<name>/SKILL.md  (cross-tool alias)
+#                agents → .codex/agents/<name>.toml       (materialized)
+#                hooks  → ~/.codex/config.toml [managed block]
+#   copilot      skills → .github/skills/<name>/SKILL.md
+#                agents → .github/agents/<name>.agent.md
+#   gemini-cli   skills → .gemini/skills/<name>/SKILL.md
+#                agents → .gemini/agents/<name>.md
+#   junie        skills → .junie/skills/<name>/SKILL.md
+#                agents → .junie/agents/<name>.md
+#   antigravity  skills → .agent/skills/<name>/SKILL.md   (singular!)
+#
+# Refuse-on-conflict: every writer detects user-authored content at its
+# destination and either skips with a warning (symlink writers) or fails
+# hard (Codex TOML agents, Cursor/Codex hooks).
 targets:
-  # All defaults: skills → .claude/skills/, commands → .claude/commands/,
-  # agents → .claude/agents/.
-  claude-code: {}
+  cursor: {}
+  # codex: {}
+  # copilot: {}
+  # gemini-cli: {}
+  # junie: {}
+  # antigravity: {}
 
-  # Override the skills destination but keep default commands/agents.
-  cursor:
-    source_mappings:
-      skills:
-        - target: .cursor/team-skills
 
-  # OpenAI Codex installs skills under the cross-tool .agents/ alias and
-  # subagents under .codex/agents/ as TOML.
-  codex: {}
-
-  # Custom target: Gemini CLI commands are TOML, not Markdown — make sure
-  # plugins shipping commands for this target use .toml leaves.
-  gemini-cli: {}
-
+# ─────────────────────────────────────────────────────────────────────
+# sync
+# ─────────────────────────────────────────────────────────────────────
+# Sync-time behavior.
+#
+# Fields:
+#   onOpen   (optional, bool, default false) — IDE extensions consult
+#            this to decide whether to run `agentenv sync` when a project
+#            is opened.
+#   refetch  (optional, bool, default false) — Re-fetch marketplaces on
+#            every sync. Overridable per-run with `agentenv sync
+#            --refetch` / `--no-fetch`.
 sync:
   onOpen: true
   refetch: false
-  mode: symlink
 
+
+# ─────────────────────────────────────────────────────────────────────
+# clean
+# ─────────────────────────────────────────────────────────────────────
+# Behavior for `agentenv clean`.
+#
+# Fields:
+#   pruneEmptyDirs  (optional, bool, default true) — After removing
+#                   managed links, prune any directories inside the
+#                   project root that are now empty (e.g. a leftover
+#                   `.cursor/skills/`). Stops at the project root and
+#                   never touches dirs that still hold user files.
 clean:
-  # After `agentenv clean` removes managed links, prune any directories inside
-  # the project root that are now empty (e.g. a leftover `.claude/skills/`).
-  # Stops at the project root and never touches dirs that still hold user files.
   pruneEmptyDirs: true
 
-# Maintain a sentinel-delimited block in <project>/.gitignore listing every
-# symlink/copy agentenv currently owns. User-authored .gitignore lines outside
-# the block are preserved. `agentenv clean` strips the block.
+
+# ─────────────────────────────────────────────────────────────────────
+# gitignore_managed_links
+# ─────────────────────────────────────────────────────────────────────
+# Maintain a sentinel-delimited block in `<project>/.gitignore` listing
+# every symlink/copy agentenv currently owns. User-authored .gitignore
+# lines outside the block are preserved. `agentenv clean` strips the
+# block entirely.
+#
+# Possible values: true | false (default false)
 # gitignore_managed_links: true
 
-# Mirror a single instruction file to the various paths different AI tools
-# expect. Each key is a file at the project root; each value is a list of
-# project-relative destinations to symlink it from. agentenv NEVER overrides
-# an existing user file — it skips with a warning if the destination already
-# has content it doesn't own.
+
+# ─────────────────────────────────────────────────────────────────────
+# instruction_files
+# ─────────────────────────────────────────────────────────────────────
+# Mirror a single root-level instruction file to the various paths each
+# AI tool expects. Each key is a file at the project root; each value
+# is a list of project-relative destinations to symlink it from.
+#
+# NEVER overrides an existing user file — agentenv skips with a warning
+# if the destination already holds content it does not own. agentenv-
+# managed symlinks pointing at a different source are updated; pointing
+# at the same source are no-ops.
+#
+# When `source: claude-code` is set and you don't write this block
+# yourself, agentenv auto-populates it from each configured target's
+# default destinations (CLAUDE.md → AGENTS.md for cursor/codex/copilot,
+# etc.).
+#
+# Per-tool default destinations (used when auto-populating):
+#   codex / cursor / copilot   → AGENTS.md
+#   gemini-cli                 → GEMINI.md, AGENTS.md
+#   junie                      → .junie/AGENTS.md
+#   antigravity                → agents.md
 #
 # instruction_files:
 #   CLAUDE.md:

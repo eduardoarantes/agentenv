@@ -17,7 +17,7 @@ pub mod cursor;
 
 use crate::error::{Error, Result};
 use crate::hooks::types::{Canonical, WriteReport};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Dispatch to the right writer based on the target name.
 pub fn write(target: &str, canonical: &Canonical, project_root: &Path) -> Result<WriteReport> {
@@ -27,5 +27,19 @@ pub fn write(target: &str, canonical: &Canonical, project_root: &Path) -> Result
         other => Err(Error::Config(format!(
             "hooks writer for target `{other}` is not implemented in this version"
         ))),
+    }
+}
+
+/// Project-rooted artifact path the writer for `target` would touch, if any.
+///
+/// Used by the gitignore writer to ignore the tool folder that agentenv may
+/// have written into even when no state-link points inside it (cursor's
+/// `hooks.json` is materialized, not symlinked, so it never appears in
+/// state). Returns `None` for writers whose destination lives outside the
+/// project root (codex writes to `~/.codex/config.toml`).
+pub fn project_artifact(target: &str, project_root: &Path) -> Option<PathBuf> {
+    match target {
+        "cursor" => Some(cursor::destination(project_root)),
+        _ => None,
     }
 }
