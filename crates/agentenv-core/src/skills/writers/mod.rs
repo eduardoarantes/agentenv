@@ -100,6 +100,11 @@ fn install_to_dir(
     let managed: HashSet<&Path> = old_state.links.iter().map(|l| l.target.as_path()).collect();
 
     for skill in &canonical.skills {
+        // `source_dir` is `#[serde(skip)]`, so it deserializes to an empty
+        // `PathBuf` from disk. Production sync always re-runs the reader
+        // before invoking writers (see `crate::skills::pipeline`), so this
+        // branch is only reachable when a caller hands us a canonical built
+        // without a reader (today: tests). Treat it as a defensive guard.
         if skill.source_dir.as_os_str().is_empty() {
             outcome.report.drops.push(format!(
                 "{target_name}: skill `{}` has no source_dir captured — skipping (likely an orphaned canonical entry)",

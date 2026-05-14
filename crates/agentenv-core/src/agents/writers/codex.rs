@@ -38,6 +38,10 @@ pub fn write(
     let dest_root = project_root.join(TARGET_DIR);
 
     for agent in &canonical.agents {
+        // `source_file` is `#[serde(skip)]` — empty after deserializing from
+        // disk. Production sync always re-runs the reader before this, so
+        // we only hit this branch from callers that hand us a canonical
+        // built without a reader (today: tests). Defensive guard.
         if agent.source_file.as_os_str().is_empty() {
             outcome.report.drops.push(format!(
                 "codex: agent `{}` has no source_file captured — skipping",

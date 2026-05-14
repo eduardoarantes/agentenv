@@ -111,6 +111,11 @@ fn install_symlinks(
     let managed: HashSet<&Path> = old_state.links.iter().map(|l| l.target.as_path()).collect();
 
     for agent in &canonical.agents {
+        // `source_file` is `#[serde(skip)]` — empty after deserializing from
+        // disk. Production sync always re-runs the reader before invoking
+        // writers (see `crate::agents::pipeline`), so this is only reachable
+        // from callers that hand us a canonical built without a reader
+        // (today: tests). Defensive guard.
         if agent.source_file.as_os_str().is_empty() {
             outcome.report.drops.push(format!(
                 "{target_name}: agent `{}` has no source_file captured — skipping",
