@@ -365,10 +365,11 @@ fn source_codex_reads_user_notify_and_renders_cursor() {
 }
 
 #[test]
-fn source_copilot_silently_noops_hooks_with_write_targets_configured() {
-    // Copilot has no hook layer. The reader returns `Ok(None)` so the
-    // pipeline short-circuits cleanly even with cursor as a hook write
-    // target — no canonical, no destination file, no spurious warning.
+fn source_copilot_noops_when_no_hooks_dir() {
+    // Copilot has a hook layer, but this project doesn't ship any hooks
+    // under `.github/hooks/`, so the pipeline short-circuits cleanly even
+    // with cursor as a hook write target — no canonical, no destination
+    // file, no spurious warning.
     let project = TempDir::new().unwrap();
     let mut config = base_config();
     config.source = Some("copilot".to_string());
@@ -379,6 +380,64 @@ fn source_copilot_silently_noops_hooks_with_write_targets_configured() {
     assert!(!cursor_writer::destination(project.path()).exists());
     // No "no v1 hook write target" warning — there IS a write target,
     // the source just had nothing to read.
+    assert!(
+        !report.warnings.iter().any(|w| w.contains("no v1 hook")),
+        "warnings: {:?}",
+        report.warnings
+    );
+}
+
+#[test]
+fn source_copilot_reads_github_hooks_and_renders_cursor() {
+    // End-to-end: hand-author a `.github/hooks/repo.json` Stop hook,
+    // configure cursor as the only write target, and assert it renders
+    // through canonical to `.cursor/hooks.json`.
+    let project = TempDir::new().unwrap();
+    let hooks_dir = project.path().join(".github").join("hooks");
+    std::fs::create_dir_all(&hooks_dir).unwrap();
+    std::fs::write(
+        hooks_dir.join("repo.json"),
+        serde_json::json!({
+            "version": 1,
+            "hooks": {
+                "agentStop": [
+                    {"type": "command", "bash": "echo done-from-copilot"}
+                ]
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let mut config = base_config();
+    config.source = Some("copilot".to_string());
+    config.targets.insert("cursor".to_string(), empty_target());
+
+    let report = pipeline::run(&config, project.path()).expect("pipeline succeeds");
+
+    // Canonical artifact landed with source=copilot and one Stop hook.
+    let canonical_path = report.canonical_path.expect("canonical written");
+    assert!(canonical_path.exists());
+    let canonical = canonical_io::read(project.path()).unwrap().unwrap();
+    assert_eq!(canonical.source, "copilot");
+    assert_eq!(canonical.hooks.len(), 1);
+    assert!(matches!(
+        canonical.hooks[0].event,
+        agentenv_core::hooks::Event::Common(agentenv_core::hooks::CommonEvent::Stop)
+    ));
+
+    // Cursor rendered the Stop hook.
+    let cursor_dest = cursor_writer::destination(project.path());
+    assert!(cursor_dest.exists(), "{} missing", cursor_dest.display());
+    let body: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&cursor_dest).unwrap()).unwrap();
+    assert!(body["hooks"]["Stop"].is_array());
+    let cmd = body["hooks"]["Stop"][0]["hooks"][0]["command"]
+        .as_str()
+        .unwrap_or("");
+    assert_eq!(cmd, "echo done-from-copilot");
+
+    // No spurious "no v1 hook write target" warning.
     assert!(
         !report.warnings.iter().any(|w| w.contains("no v1 hook")),
         "warnings: {:?}",

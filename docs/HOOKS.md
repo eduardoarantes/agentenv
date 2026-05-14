@@ -380,7 +380,7 @@ content yourself or set `source:` to a different target.
 | Read (source) | `claude-code` | ✅ implemented |
 | Read (source) | `cursor` | ✅ implemented (parses `.cursor/hooks.json` claude-shape) |
 | Read (source) | `codex` | ✅ implemented (parses top-level `notify` in `~/.codex/config.toml`) |
-| Read (source) | `copilot` | ✅ accepted as source — Copilot has no hook layer, so the reader always returns `Ok(None)` and the pipeline short-circuits |
+| Read (source) | `copilot` | ✅ implemented (parses `.github/hooks/*.json`; `http`/`prompt` entries preserved as native events) |
 | Write | `cursor` | ✅ implemented |
 | Write | `codex` | ✅ implemented |
 | Write | `copilot` | deferred |
