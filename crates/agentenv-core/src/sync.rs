@@ -140,12 +140,26 @@ impl Syncer {
         let (actions, warnings) = enumerate_actions(config, project_root, &resolved)?;
         report.warnings.extend(warnings);
 
-        // Load state up front: instruction-file propagation needs it to
-        // distinguish agentenv-managed symlinks from user files.
+        // Load state up front: installs may need to remove a previously
+        // managed leaf before creating nested links, and instruction-file
+        // propagation needs it to distinguish agentenv-managed symlinks from
+        // user files.
         let old_state = State::load(project_root)?;
+        let old_managed_targets: HashSet<PathBuf> = old_state
+            .links
+            .iter()
+            .map(|link| link.target.clone())
+            .collect();
+        let mut prepared_nested_parents: HashSet<PathBuf> = HashSet::new();
 
         let mut new_state = State::default();
         for planned in &actions {
+            prepare_nested_install_parent(
+                &planned.target,
+                &old_managed_targets,
+                &mut prepared_nested_parents,
+            )?;
+
             let action = InstallAction {
                 source: planned.source.clone(),
                 target: planned.target.clone(),
@@ -459,9 +473,28 @@ fn enumerate_actions(
                     let dest_root =
                         render_destination(project_root, &mapping.target, &plugin.name)?;
                     for leaf in &leaves {
+                        let source_leaf = capability_dir.join(leaf);
+                        let target_leaf = dest_root.join(leaf);
+                        if target_name == "codex" && capability == "skills" && source_leaf.is_dir()
+                        {
+                            let (child_actions, child_warnings) = codex_skill_leaf_actions(
+                                &source_leaf,
+                                &target_leaf,
+                                &mapping.mode,
+                                target_name,
+                                &plugin.name,
+                            )?;
+                            if !child_actions.is_empty() {
+                                linked_any = true;
+                            }
+                            actions.extend(child_actions);
+                            warnings.extend(child_warnings);
+                            continue;
+                        }
+
                         actions.push(PlannedAction {
-                            source: capability_dir.join(leaf),
-                            target: dest_root.join(leaf),
+                            source: source_leaf,
+                            target: target_leaf,
                             mode: mapping.mode.clone(),
                             tool: target_name.clone(),
                             plugin: plugin.name.clone(),
@@ -481,6 +514,85 @@ fn enumerate_actions(
     }
 
     Ok((actions, warnings))
+}
+
+/// Codex requires the skill entry point to be named `SKILL.md`. Some Claude
+/// skill sources use lowercase `skill.md`, so Codex skill directories are
+/// materialized as per-child links and the entry-point filename is normalized
+/// at the target.
+fn codex_skill_leaf_actions(
+    source_leaf: &Path,
+    target_leaf: &Path,
+    mode: &str,
+    target_name: &str,
+    plugin_name: &str,
+) -> Result<(Vec<PlannedAction>, Vec<String>)> {
+    let mut entries = Vec::new();
+    for entry in fs::read_dir(source_leaf)? {
+        entries.push(entry?);
+    }
+    entries.sort_by_key(|entry| entry.file_name());
+    let has_upper = entries
+        .iter()
+        .any(|entry| entry.file_name().to_string_lossy() == "SKILL.md");
+
+    let mut actions = Vec::new();
+    let mut warnings = Vec::new();
+    for entry in entries {
+        let name = entry.file_name();
+        let is_lower_entrypoint = name.to_string_lossy() == "skill.md";
+        if is_lower_entrypoint && has_upper {
+            warnings.push(format!(
+                "codex skill {} contains both skill.md and SKILL.md; using SKILL.md",
+                source_leaf.display()
+            ));
+            continue;
+        }
+
+        let target_file_name = if is_lower_entrypoint {
+            OsString::from("SKILL.md")
+        } else {
+            name
+        };
+
+        actions.push(PlannedAction {
+            source: entry.path(),
+            target: target_leaf.join(target_file_name),
+            mode: mode.to_string(),
+            tool: target_name.to_string(),
+            plugin: plugin_name.to_string(),
+        });
+    }
+
+    Ok((actions, warnings))
+}
+
+/// If a previous sync installed a managed leaf symlink at a path that is now
+/// the parent of nested links, remove that managed symlink before installing
+/// the children. This lets Codex skill installs migrate from whole-directory
+/// links to per-child links cleanly.
+fn prepare_nested_install_parent(
+    target: &Path,
+    old_managed_targets: &HashSet<PathBuf>,
+    prepared: &mut HashSet<PathBuf>,
+) -> Result<()> {
+    let Some(parent) = target.parent() else {
+        return Ok(());
+    };
+    let parent = parent.to_path_buf();
+    if !prepared.insert(parent.clone()) || !old_managed_targets.contains(&parent) {
+        return Ok(());
+    }
+
+    let meta = match fs::symlink_metadata(&parent) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(Error::Io(err)),
+    };
+    if meta.file_type().is_symlink() {
+        SymlinkManager::remove(parent)?;
+    }
+    Ok(())
 }
 
 /// Remove a link that agentenv previously installed, defensively. Returns
@@ -857,6 +969,63 @@ mod tests {
         assert_eq!(report.installs.len(), 1);
         assert!(report.all_succeeded());
         assert!(!project.path().join(".claude/skills/.gitkeep").exists());
+    }
+
+    #[test]
+    fn sync_codex_skills_use_dot_codex_and_uppercase_entrypoint() {
+        let marketplace = TempDir::new().unwrap();
+        let project = TempDir::new().unwrap();
+        write_plugin(marketplace.path(), "demo", "1.0.0", &["codex"], &["skills"]);
+        let skill_dir = marketplace.path().join("demo/skills/skills-leaf");
+        fs::rename(skill_dir.join("SKILL.md"), skill_dir.join("skill.md")).unwrap();
+        fs::create_dir_all(skill_dir.join("scripts")).unwrap();
+        fs::write(skill_dir.join("scripts/run.sh"), "echo ok\n").unwrap();
+
+        let mut config = base_config(marketplace.path().to_path_buf());
+        config.targets.clear();
+        config
+            .targets
+            .insert("codex".to_string(), TargetDefaults::codex());
+        config.plugins = vec![PluginRef {
+            name: "demo".to_string(),
+            namespace: None,
+            version: None,
+        }];
+
+        let report = Syncer::sync(&config, project.path(), SyncOptions::default()).unwrap();
+        assert!(report.all_succeeded(), "sync failed: {report:?}");
+
+        let target_skill = project.path().join(".codex/skills/skills-leaf");
+        let target_entry = target_skill.join("SKILL.md");
+        let target_scripts = target_skill.join("scripts");
+        let target_names: Vec<String> = fs::read_dir(&target_skill)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().to_string())
+            .collect();
+
+        assert!(
+            target_entry.is_symlink(),
+            "missing {}; installs: {:?}",
+            target_entry.display(),
+            report.installs
+        );
+        assert_eq!(
+            fs::read_link(&target_entry).unwrap(),
+            skill_dir.join("skill.md")
+        );
+        assert!(
+            !target_names.iter().any(|name| name == "skill.md"),
+            "lowercase codex entrypoint should not be installed; got {target_names:?}"
+        );
+        assert!(target_scripts.is_symlink());
+        assert!(
+            !project.path().join(".agents/skills/skills-leaf").exists(),
+            "codex skills should no longer be installed under .agents"
+        );
+
+        let state = State::load(project.path()).unwrap();
+        assert!(state.links.iter().any(|link| link.target == target_entry));
+        assert!(state.links.iter().all(|link| link.target != target_skill));
     }
 
     /// When `use_claude_config: true`, inline-authored agents/skills/commands

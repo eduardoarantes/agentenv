@@ -55,8 +55,8 @@ targets:
       skills:
         - target: .cursor/team-skills
 
-  # OpenAI Codex installs skills under the cross-tool .agents/ alias and
-  # subagents under .codex/agents/ as TOML.
+  # OpenAI Codex installs skills under .codex/skills/ (normalizing lowercase
+  # skill.md entrypoints to SKILL.md) and subagents under .codex/agents/ as TOML.
   codex: {}
 
   # Custom target: Gemini CLI commands are TOML, not Markdown — make sure

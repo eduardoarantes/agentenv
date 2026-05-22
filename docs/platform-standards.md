@@ -64,7 +64,7 @@ Recommended `SKILL.md` ≤500 lines.
 | Tool             | Primary project       | Primary user                       | Aliases                                                                                      | Source |
 | ---------------- | --------------------- | ---------------------------------- | -------------------------------------------------------------------------------------------- | ------ |
 | Claude Code      | `.claude/skills/`     | `~/.claude/skills/`                | also discovered from nested `.claude/skills/` in subdirs (monorepo)                          | [docs](https://code.claude.com/docs/en/skills) |
-| OpenAI Codex     | `.agents/skills/`     | `~/.agents/skills/`                | walks every dir from `$CWD` up to repo root; admin: `/etc/codex/skills`                      | [docs](https://developers.openai.com/codex/skills) |
+| OpenAI Codex     | `.codex/skills/`      | `~/.codex/skills/`                 | agentenv target default; OpenAI docs also document `.agents/skills` for repo-scoped skills   | [docs](https://developers.openai.com/codex/skills) |
 | Cursor           | `.cursor/skills/`, `.agents/skills/` | `~/.cursor/skills/`, `~/.agents/skills/` | also: `.claude/skills/`, `.codex/skills/`, `~/.claude/skills/`, `~/.codex/skills/`     | [docs](https://cursor.com/docs/context/skills) |
 | GitHub Copilot   | `.github/skills/`, `.claude/skills/`, `.agents/skills/` | `~/.copilot/skills/`, `~/.agents/skills/` | — | [docs](https://docs.github.com/en/copilot/concepts/agents/about-agent-skills) |
 | VS Code Copilot  | `.github/skills/`, `.claude/skills/`, `.agents/skills/` | `~/.copilot/skills/`, `~/.claude/skills/`, `~/.agents/skills/` | — | [docs](https://code.visualstudio.com/docs/copilot/customization/agent-skills) |
@@ -321,12 +321,17 @@ time. Capabilities a target doesn't natively support are simply not exported.
 | Target         | Mapping                                  |
 | -------------- | ---------------------------------------- |
 | `claude-code`  | `.claude/skills/{plugin}`                |
-| `codex`        | `.agents/skills/{plugin}`                |
+| `codex`        | `.codex/skills/{plugin}`                 |
 | `cursor`       | `.cursor/skills/{plugin}`                |
 | `copilot`      | `.github/skills/{plugin}`                |
 | `gemini-cli`   | `.gemini/skills/{plugin}`                |
 | `junie`        | `.junie/skills/{plugin}`                 |
 | `antigravity`  | `.agent/skills/{plugin}` (singular)      |
+
+For the `codex` target, agentenv materializes each skill leaf as a target
+directory and normalizes a lowercase source `skill.md` entrypoint to
+`SKILL.md`, while preserving sibling assets such as `scripts/` and
+`references/`.
 
 ### Subagents
 
@@ -385,8 +390,8 @@ Claude Code MCP JSON is interoperable. Codex needs TOML translation. Defer.
    that custom agents in `.codex/agents/` aren't always reachable from
    tool-backed sessions. Watch for resolution before promising a Codex
    subagent target.
-3. **`.agents/` (plural) cross-tool alias.** Codex, Cursor, Copilot, Gemini
-   CLI all accept it for skills. We default to tool-native paths because they
+3. **`.agents/` (plural) cross-tool alias.** Cursor, Copilot, Gemini CLI and
+   current OpenAI docs accept it for skills. We default to tool-native paths because they
    are most discoverable when users edit config by hand. A future "portable
    mode" target could emit only `.agents/skills/`.
 4. **Hook portability.** Same conceptual feature, totally different event

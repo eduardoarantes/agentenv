@@ -50,15 +50,17 @@ impl TargetDefaults {
         }
     }
 
-    /// OpenAI Codex — skills under `.agents/skills/`, subagents under
-    /// `.codex/agents/` (TOML, not Markdown — plugins must ship `.toml` files).
+    /// OpenAI Codex — skills under `.codex/skills/`, with lowercase
+    /// `skill.md` entrypoints normalized to `SKILL.md` during sync. Subagents
+    /// live under `.codex/agents/` (TOML, not Markdown — plugins must ship
+    /// `.toml` files).
     pub fn codex() -> TargetConfig {
         TargetConfig {
             r#type: "codex".to_string(),
             tools: vec!["codex".to_string()],
             paths: HashMap::new(),
             source_mappings: capability_mappings(&[
-                ("skills", ".agents/skills"),
+                ("skills", ".codex/skills"),
                 ("agents", ".codex/agents"),
             ]),
         }
@@ -181,13 +183,13 @@ mod tests {
     }
 
     #[test]
-    fn codex_skills_use_dot_agents_alias() {
+    fn codex_skills_use_dot_codex_path() {
         let config = TargetDefaults::codex();
         assert_eq!(
             config.source_mappings.get("skills").unwrap()[0]
                 .target
                 .to_string_lossy(),
-            ".agents/skills"
+            ".codex/skills"
         );
         assert_eq!(
             config.source_mappings.get("agents").unwrap()[0]
