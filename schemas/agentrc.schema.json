@@ -90,6 +90,17 @@
         }
       }
     },
+    "recursive_instruction_files": {
+      "type": "boolean",
+      "default": true,
+      "description": "When true (default), agentenv walks subdirectories and applies instruction_files mappings to every discovered source file, not just the one at the project root."
+    },
+    "recursive_instruction_files_depth": {
+      "type": "integer",
+      "default": 8,
+      "minimum": 1,
+      "description": "Maximum directory depth for recursive instruction file discovery. Depth 1 means only immediate children of the project root."
+    },
     "sync": {
       "type": "object",
       "description": "Sync behavior configuration",

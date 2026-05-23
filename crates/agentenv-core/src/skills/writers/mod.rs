@@ -40,12 +40,13 @@ pub struct WriterOutcome {
 /// Project-relative destination root for each target's skills tree.
 ///
 /// Paths from [docs/platform-standards.md §8](../../../../docs/platform-standards.md);
-/// Codex uses the cross-tool `.agents/` alias rather than `.codex/`,
+/// Codex uses `.codex/skills/` and supports per-child linking with entry-point
+/// normalization (lowercase `skill.md` → `SKILL.md`);
 /// Antigravity uses singular `.agent/`.
 fn destination_root(target: &str) -> Option<&'static str> {
     match target {
         "cursor" => Some(".cursor/skills"),
-        "codex" => Some(".agents/skills"),
+        "codex" => Some(".codex/skills"),
         "copilot" => Some(".github/skills"),
         "gemini-cli" => Some(".gemini/skills"),
         "junie" => Some(".junie/skills"),
@@ -79,6 +80,9 @@ pub fn write(
     project_root: &Path,
     old_state: &State,
 ) -> Result<WriterOutcome> {
+    if target == "codex" {
+        return install_codex_per_child(canonical, project_root, old_state);
+    }
     let Some(rel) = destination_root(target) else {
         return Err(Error::Config(format!(
             "skills writer for target `{target}` is not implemented in this version"
@@ -136,6 +140,133 @@ fn install_to_dir(
             mode: "symlink".to_string(),
             plugin: SKILLS_PLUGIN.to_string(),
         });
+    }
+
+    Ok(outcome)
+}
+
+/// Install Codex skills with per-child linking and entry-point normalization.
+///
+/// Codex requires the skill entry point to be named `SKILL.md` (uppercase).
+/// Instead of symlinking the entire skill directory, this installs each file
+/// within the skill directory as a separate symlink, normalizing lowercase
+/// `skill.md` to uppercase `SKILL.md` at the destination.
+fn install_codex_per_child(
+    canonical: &Canonical,
+    project_root: &Path,
+    old_state: &State,
+) -> Result<WriterOutcome> {
+    let dest_root = project_root.join(".codex/skills");
+    let mut outcome = WriterOutcome::default();
+
+    let managed: HashSet<&Path> = old_state.links.iter().map(|l| l.target.as_path()).collect();
+
+    for skill in &canonical.skills {
+        if skill.source_dir.as_os_str().is_empty() {
+            outcome.report.drops.push(format!(
+                "codex: skill `{}` has no source_dir captured — skipping (likely an orphaned canonical entry)",
+                skill.name
+            ));
+            continue;
+        }
+
+        let skill_dest_root = dest_root.join(&skill.name);
+
+        // Handle migration: if a whole-skill symlink exists, remove it before
+        // installing per-child links. This allows seamless transition from
+        // skill-level to per-child linking.
+        if let Ok(meta) = fs::symlink_metadata(&skill_dest_root) {
+            if meta.is_symlink() && managed.contains(skill_dest_root.as_path()) {
+                SymlinkManager::remove(&skill_dest_root)?;
+            }
+        }
+
+        // Read skill directory and install each file/subdirectory as a symlink.
+        let entries: Result<Vec<_>> = fs::read_dir(&skill.source_dir)
+            .map_err(|e| {
+                Error::Io(std::io::Error::new(
+                    e.kind(),
+                    format!("reading codex skill {}: {}", skill.name, e),
+                ))
+            })?
+            .map(|entry_result| entry_result.map_err(Error::from))
+            .collect();
+        let mut entries = entries?;
+
+        entries.sort_by_key(|entry| entry.file_name());
+
+        // Check if SKILL.md already exists (to warn if both skill.md and SKILL.md are present).
+        let has_uppercase_entrypoint = entries
+            .iter()
+            .any(|entry| entry.file_name().to_string_lossy() == "SKILL.md");
+
+        for entry in entries {
+            let name = entry.file_name();
+            let entry_path = entry.path();
+
+            // Handle lowercase skill.md: normalize to SKILL.md or skip if uppercase exists
+            if name.to_string_lossy() == "skill.md" {
+                if has_uppercase_entrypoint {
+                    outcome.report.drops.push(format!(
+                        "codex: skill {} contains both skill.md and SKILL.md; using SKILL.md",
+                        skill.name
+                    ));
+                    continue;
+                }
+                // Lowercase skill.md without uppercase: normalize to SKILL.md
+                // Create normalized symlink using the source file
+                let dest = skill_dest_root.join("SKILL.md");
+                match check_conflict(&dest, &managed)? {
+                    ConflictDecision::ManagedReplace => {
+                        SymlinkManager::remove(&dest)?;
+                    },
+                    ConflictDecision::Fresh => {},
+                    ConflictDecision::UserOwned(reason) => {
+                        outcome.report.drops.push(reason);
+                        continue;
+                    },
+                }
+                if let Some(parent) = dest.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                SymlinkManager::create_symlink(&entry_path, &dest)?;
+                outcome.state_links.push(StateLink {
+                    source: entry_path,
+                    target: dest,
+                    tool: "codex".to_string(),
+                    mode: "symlink".to_string(),
+                    plugin: SKILLS_PLUGIN.to_string(),
+                });
+                continue;
+            }
+
+            let target_name = name;
+            let dest = skill_dest_root.join(&target_name);
+
+            match check_conflict(&dest, &managed)? {
+                ConflictDecision::ManagedReplace => {
+                    SymlinkManager::remove(&dest)?;
+                },
+                ConflictDecision::Fresh => {},
+                ConflictDecision::UserOwned(reason) => {
+                    outcome.report.drops.push(reason);
+                    continue;
+                },
+            }
+
+            if let Some(parent) = dest.parent() {
+                fs::create_dir_all(parent)?;
+            }
+
+            SymlinkManager::create_symlink(&entry_path, &dest)?;
+            outcome.state_links.push(StateLink {
+                source: entry_path,
+                target: dest,
+                tool: "codex".to_string(),
+                mode: "symlink".to_string(),
+                plugin: SKILLS_PLUGIN.to_string(),
+            });
+        }
     }
 
     Ok(outcome)
@@ -226,12 +357,34 @@ mod tests {
                 "{target} drops: {:?}",
                 outcome.report.drops
             );
-            assert_eq!(outcome.state_links.len(), 1, "target={target}");
 
             let rel = destination_root(target).unwrap();
-            let dest = project.path().join(rel).join("hello");
-            assert!(dest.is_symlink(), "missing {}", dest.display());
-            assert_eq!(fs::read_link(&dest).unwrap(), skill_dir);
+            let skill_dest = project.path().join(rel).join("hello");
+
+            if *target == "codex" {
+                // Codex uses per-child linking: SKILL.md is inside the skill directory
+                assert_eq!(
+                    outcome.state_links.len(),
+                    1,
+                    "codex per-child should create 1 link for SKILL.md, got {}: target={target}",
+                    outcome.state_links.len()
+                );
+                let entry_point = skill_dest.join("SKILL.md");
+                assert!(
+                    entry_point.is_symlink(),
+                    "missing {}",
+                    entry_point.display()
+                );
+                assert_eq!(
+                    fs::read_link(&entry_point).unwrap(),
+                    skill_dir.join("SKILL.md")
+                );
+            } else {
+                // Other targets use skill-level symlinks
+                assert_eq!(outcome.state_links.len(), 1, "target={target}");
+                assert!(skill_dest.is_symlink(), "missing {}", skill_dest.display());
+                assert_eq!(fs::read_link(&skill_dest).unwrap(), skill_dir);
+            }
         }
     }
 
@@ -372,5 +525,60 @@ mod tests {
         assert_eq!(outcome.state_links.len(), 0);
         assert_eq!(outcome.report.drops.len(), 1);
         assert!(outcome.report.drops[0].contains("ghost"));
+    }
+
+    #[test]
+    fn codex_uses_per_child_linking_with_entrypoint_normalization() {
+        let project = TempDir::new().unwrap();
+        let source_root = project.path().join(".claude/skills");
+        let skill_dir = source_root.join("demo");
+        fs::create_dir_all(&skill_dir).unwrap();
+
+        // Create skill with lowercase skill.md (intentionally not uppercase).
+        fs::write(skill_dir.join("skill.md"), "---\nname: demo\n---\nbody").unwrap();
+        fs::create_dir_all(skill_dir.join("scripts")).unwrap();
+        fs::write(skill_dir.join("scripts/run.sh"), "#!/bin/bash\necho ok\n").unwrap();
+
+        let canonical = Canonical {
+            source: "claude-code".to_string(),
+            skills: vec![make_skill(&skill_dir, "demo")],
+        };
+
+        let outcome = write("codex", &canonical, project.path(), &State::default()).unwrap();
+        assert!(
+            outcome.report.drops.is_empty(),
+            "codex drops: {:?}",
+            outcome.report.drops
+        );
+        // Per-child linking creates multiple state links (one per child file/dir).
+        assert!(
+            outcome.state_links.len() > 1,
+            "codex should create per-child links, got {} links",
+            outcome.state_links.len()
+        );
+
+        // Verify entry point is normalized to SKILL.md.
+        let target_entry = project.path().join(".codex/skills/demo/SKILL.md");
+        assert!(
+            target_entry.is_symlink(),
+            "missing normalized SKILL.md at {}",
+            target_entry.display()
+        );
+        assert_eq!(
+            fs::read_link(&target_entry).unwrap(),
+            skill_dir.join("skill.md")
+        );
+
+        // Verify subdirectories are linked.
+        let target_scripts = project.path().join(".codex/skills/demo/scripts");
+        assert!(
+            target_scripts.is_symlink(),
+            "scripts subdir should be linked: {}",
+            target_scripts.display()
+        );
+        assert_eq!(
+            fs::read_link(&target_scripts).unwrap(),
+            skill_dir.join("scripts")
+        );
     }
 }

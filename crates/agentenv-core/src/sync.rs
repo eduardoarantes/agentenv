@@ -13,6 +13,7 @@ use crate::marketplace::{EnsureBehavior, EnsureOutcome, Marketplace};
 use crate::resolver::PluginResolver;
 use crate::state::{State, StateLink};
 use crate::symlink::{InstallAction, InstallResult, SymlinkManager};
+use ignore::WalkBuilder;
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -281,6 +282,70 @@ fn classify_instruction_destination(
     }
 }
 
+/// Discover all files matching `source_filename` in subdirectories of `project_root`,
+/// respecting `.gitignore` and a configurable depth limit. Skips the project root itself.
+fn discover_recursive_instruction_files(
+    project_root: &Path,
+    source_filename: &str,
+    max_depth: u32,
+) -> Result<Vec<PathBuf>> {
+    let hard_skip_dirs = ["node_modules", "target", "dist", "build"];
+    let mut discovered = Vec::new();
+
+    let walker = WalkBuilder::new(project_root)
+        .max_depth(Some(max_depth as usize))
+        .standard_filters(true)
+        .build();
+
+    for result in walker {
+        match result {
+            Ok(entry) => {
+                let path = entry.path();
+                let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+
+                // Skip the project root itself
+                if path == project_root {
+                    continue;
+                }
+
+                // Skip non-files
+                if !entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
+                    continue;
+                }
+
+                // Skip if parent is in hard skip list
+                if let Some(parent_name) = path
+                    .parent()
+                    .and_then(|p| p.file_name())
+                    .and_then(|n| n.to_str())
+                {
+                    if hard_skip_dirs.contains(&parent_name) {
+                        continue;
+                    }
+                }
+
+                // Collect matching files
+                if file_name == source_filename {
+                    discovered.push(path.to_path_buf());
+                    if discovered.len() >= 1000 {
+                        tracing::warn!(
+                            "Recursive instruction file discovery: found {} matching files, capping at limit",
+                            discovered.len()
+                        );
+                        break;
+                    }
+                }
+            },
+            Err(err) => {
+                tracing::warn!("Error walking directory: {}", err);
+            },
+        }
+    }
+
+    discovered.sort();
+    Ok(discovered)
+}
+
 fn plan_instruction_propagations(
     config: &Config,
     project_root: &Path,
@@ -297,17 +362,17 @@ fn plan_instruction_propagations(
     let mut sources: Vec<&String> = config.instruction_files.keys().collect();
     sources.sort();
 
-    for source_name in sources {
+    for source_name in &sources {
         let source_path = project_root.join(source_name);
         if !source_path.exists() {
-            let dest_count = config.instruction_files[source_name].len();
+            let dest_count = config.instruction_files[*source_name].len();
             warnings.push(format!(
                 "instruction file `{source_name}` not found at project root; skipping {dest_count} destination(s)"
             ));
             continue;
         }
 
-        for dest in &config.instruction_files[source_name] {
+        for dest in &config.instruction_files[*source_name] {
             let dest_path = project_root.join(dest);
             match classify_instruction_destination(&dest_path, &source_path, &managed)? {
                 Ok(_decision) => {
@@ -320,6 +385,49 @@ fn plan_instruction_propagations(
                     });
                 },
                 Err(warning) => warnings.push(warning),
+            }
+        }
+    }
+
+    // Recursive discovery: apply instruction_files mappings to every subdirectory
+    if config.recursive_instruction_files {
+        for source_name in &sources {
+            let destinations = &config.instruction_files[*source_name];
+            match discover_recursive_instruction_files(
+                project_root,
+                source_name,
+                config.recursive_instruction_files_depth,
+            ) {
+                Ok(discovered) => {
+                    for discovered_source in discovered {
+                        if let Some(dir) = discovered_source.parent() {
+                            for dest in destinations {
+                                let dest_path = dir.join(dest);
+                                match classify_instruction_destination(
+                                    &dest_path,
+                                    &discovered_source,
+                                    &managed,
+                                )? {
+                                    Ok(_decision) => {
+                                        actions.push(PlannedAction {
+                                            source: discovered_source.clone(),
+                                            target: dest_path,
+                                            mode: "symlink".to_string(),
+                                            tool: INSTRUCTIONS_TOOL.to_string(),
+                                            plugin: INSTRUCTIONS_PLUGIN.to_string(),
+                                        });
+                                    },
+                                    Err(warning) => warnings.push(warning),
+                                }
+                            }
+                        }
+                    }
+                },
+                Err(err) => {
+                    warnings.push(format!(
+                        "recursive instruction file discovery failed for `{source_name}`: {err}"
+                    ));
+                },
             }
         }
     }
@@ -344,17 +452,17 @@ fn execute_instruction_propagations(
     let mut sources: Vec<&String> = config.instruction_files.keys().collect();
     sources.sort();
 
-    for source_name in sources {
+    for source_name in &sources {
         let source_path = project_root.join(source_name);
         if !source_path.exists() {
-            let dest_count = config.instruction_files[source_name].len();
+            let dest_count = config.instruction_files[*source_name].len();
             warnings.push(format!(
                 "instruction file `{source_name}` not found at project root; skipping {dest_count} destination(s)"
             ));
             continue;
         }
 
-        for dest in &config.instruction_files[source_name] {
+        for dest in &config.instruction_files[*source_name] {
             let dest_path = project_root.join(dest);
             let decision =
                 match classify_instruction_destination(&dest_path, &source_path, &managed)? {
@@ -400,6 +508,82 @@ fn execute_instruction_propagations(
                         mode: "symlink".to_string(),
                         plugin: INSTRUCTIONS_PLUGIN.to_string(),
                     });
+                },
+            }
+        }
+    }
+
+    // Recursive discovery: apply instruction_files mappings to every subdirectory
+    if config.recursive_instruction_files {
+        for source_name in &sources {
+            let destinations = &config.instruction_files[*source_name];
+            match discover_recursive_instruction_files(
+                project_root,
+                source_name,
+                config.recursive_instruction_files_depth,
+            ) {
+                Ok(discovered) => {
+                    for discovered_source in discovered {
+                        if let Some(dir) = discovered_source.parent() {
+                            for dest in destinations {
+                                let dest_path = dir.join(dest);
+                                let decision = match classify_instruction_destination(
+                                    &dest_path,
+                                    &discovered_source,
+                                    &managed,
+                                )? {
+                                    Ok(decision) => decision,
+                                    Err(warning) => {
+                                        warnings.push(warning);
+                                        continue;
+                                    },
+                                };
+
+                                let action = InstallAction {
+                                    source: discovered_source.clone(),
+                                    target: dest_path.clone(),
+                                    mode: "symlink".to_string(),
+                                    tool: INSTRUCTIONS_TOOL.to_string(),
+                                };
+
+                                match decision {
+                                    InstructionDecision::Create | InstructionDecision::Update => {
+                                        if matches!(decision, InstructionDecision::Update) {
+                                            SymlinkManager::remove(&dest_path)?;
+                                        }
+                                        if let Some(parent) = dest_path.parent() {
+                                            fs::create_dir_all(parent)?;
+                                        }
+                                        let install = SymlinkManager::install(&action)?;
+                                        if install.success {
+                                            state_links.push(StateLink {
+                                                source: discovered_source.clone(),
+                                                target: dest_path.clone(),
+                                                tool: INSTRUCTIONS_TOOL.to_string(),
+                                                mode: "symlink".to_string(),
+                                                plugin: INSTRUCTIONS_PLUGIN.to_string(),
+                                            });
+                                        }
+                                        installs.push(install);
+                                    },
+                                    InstructionDecision::Idempotent => {
+                                        state_links.push(StateLink {
+                                            source: discovered_source.clone(),
+                                            target: dest_path.clone(),
+                                            tool: INSTRUCTIONS_TOOL.to_string(),
+                                            mode: "symlink".to_string(),
+                                            plugin: INSTRUCTIONS_PLUGIN.to_string(),
+                                        });
+                                    },
+                                }
+                            }
+                        }
+                    }
+                },
+                Err(err) => {
+                    warnings.push(format!(
+                        "recursive instruction file discovery failed for `{source_name}`: {err}"
+                    ));
                 },
             }
         }
@@ -542,6 +726,8 @@ mod tests {
             clean: CleanConfig::default(),
             gitignore_managed_links: false,
             instruction_files: HashMap::new(),
+            recursive_instruction_files: true,
+            recursive_instruction_files_depth: 8,
             source: Some("claude-code".to_string()),
         }
     }
@@ -774,6 +960,215 @@ mod tests {
         assert!(
             !gitignore.contains("/.cursor/skills/local"),
             "leaf entries should be collapsed to /.cursor/"
+        );
+    }
+
+    #[test]
+    fn recursive_instruction_files_discovers_nested_files() {
+        let project = TempDir::new().unwrap();
+        let marketplace = TempDir::new().unwrap();
+
+        // Create nested CLAUDE.md files
+        fs::create_dir_all(project.path().join("packages/frontend")).unwrap();
+        fs::create_dir_all(project.path().join("packages/backend")).unwrap();
+        fs::write(
+            project.path().join("packages/frontend/CLAUDE.md"),
+            "# Frontend CLAUDE.md",
+        )
+        .unwrap();
+        fs::write(
+            project.path().join("packages/backend/CLAUDE.md"),
+            "# Backend CLAUDE.md",
+        )
+        .unwrap();
+
+        let config = Config {
+            version: 1,
+            marketplaces: [(
+                "default".to_string(),
+                MarketplaceConfig {
+                    path: marketplace.path().to_path_buf(),
+                    remote: "https://example.com/m.git".to_string(),
+                    r#ref: "main".to_string(),
+                },
+            )]
+            .iter()
+            .cloned()
+            .collect(),
+            plugins: vec![],
+            targets: [("claude-code".to_string(), TargetConfig::default())]
+                .iter()
+                .cloned()
+                .collect(),
+            sync: SyncConfig::default(),
+            clean: CleanConfig::default(),
+            gitignore_managed_links: false,
+            instruction_files: [("CLAUDE.md".to_string(), vec!["AGENTS.md".to_string()])]
+                .iter()
+                .cloned()
+                .collect(),
+            recursive_instruction_files: true,
+            recursive_instruction_files_depth: 8,
+            source: Some("claude-code".to_string()),
+        };
+
+        Syncer::sync(
+            &config,
+            project.path(),
+            SyncOptions {
+                fetch: FetchPolicy::Skip,
+            },
+        )
+        .unwrap();
+
+        // Verify symlinks were created in subdirectories
+        assert!(
+            project
+                .path()
+                .join("packages/frontend/AGENTS.md")
+                .is_symlink(),
+            "AGENTS.md should exist in frontend"
+        );
+        assert!(
+            project
+                .path()
+                .join("packages/backend/AGENTS.md")
+                .is_symlink(),
+            "AGENTS.md should exist in backend"
+        );
+
+        // Verify symlinks point to the correct sources
+        let frontend_target =
+            fs::read_link(project.path().join("packages/frontend/AGENTS.md")).unwrap();
+        assert_eq!(
+            frontend_target.file_name().unwrap(),
+            "CLAUDE.md",
+            "frontend AGENTS.md should point to CLAUDE.md"
+        );
+    }
+
+    #[test]
+    fn recursive_instruction_files_respects_depth_limit() {
+        let project = TempDir::new().unwrap();
+        let marketplace = TempDir::new().unwrap();
+
+        // Create deeply nested CLAUDE.md files
+        fs::create_dir_all(project.path().join("a/b/c/d")).unwrap();
+        fs::write(project.path().join("a/CLAUDE.md"), "# A").unwrap();
+        fs::write(project.path().join("a/b/CLAUDE.md"), "# B").unwrap();
+        fs::write(project.path().join("a/b/c/CLAUDE.md"), "# C").unwrap();
+        fs::write(project.path().join("a/b/c/d/CLAUDE.md"), "# D").unwrap();
+
+        let config = Config {
+            version: 1,
+            marketplaces: [(
+                "default".to_string(),
+                MarketplaceConfig {
+                    path: marketplace.path().to_path_buf(),
+                    remote: "https://example.com/m.git".to_string(),
+                    r#ref: "main".to_string(),
+                },
+            )]
+            .iter()
+            .cloned()
+            .collect(),
+            plugins: vec![],
+            targets: [("claude-code".to_string(), TargetConfig::default())]
+                .iter()
+                .cloned()
+                .collect(),
+            sync: SyncConfig::default(),
+            clean: CleanConfig::default(),
+            gitignore_managed_links: false,
+            instruction_files: [("CLAUDE.md".to_string(), vec!["AGENTS.md".to_string()])]
+                .iter()
+                .cloned()
+                .collect(),
+            recursive_instruction_files: true,
+            recursive_instruction_files_depth: 4, // Only depth 4
+            source: Some("claude-code".to_string()),
+        };
+
+        Syncer::sync(
+            &config,
+            project.path(),
+            SyncOptions {
+                fetch: FetchPolicy::Skip,
+            },
+        )
+        .unwrap();
+
+        // Verify only files within depth limit are discovered
+        assert!(
+            project.path().join("a/AGENTS.md").is_symlink(),
+            "depth 1 should be discovered"
+        );
+        assert!(
+            project.path().join("a/b/AGENTS.md").is_symlink(),
+            "depth 2 should be discovered"
+        );
+        assert!(
+            project.path().join("a/b/c/AGENTS.md").is_symlink(),
+            "depth 3 should be discovered"
+        );
+        // Depth 4 should NOT have symlink (depth limit is 4, but we only go to depth 3)
+        assert!(
+            !project.path().join("a/b/c/d/AGENTS.md").exists(),
+            "depth 4 should NOT be discovered with depth limit 4 and max depth of 3"
+        );
+    }
+
+    #[test]
+    fn recursive_instruction_files_disabled_when_flag_false() {
+        let project = TempDir::new().unwrap();
+        let marketplace = TempDir::new().unwrap();
+
+        fs::create_dir_all(project.path().join("subdir")).unwrap();
+        fs::write(project.path().join("subdir/CLAUDE.md"), "# Sub").unwrap();
+
+        let config = Config {
+            version: 1,
+            marketplaces: [(
+                "default".to_string(),
+                MarketplaceConfig {
+                    path: marketplace.path().to_path_buf(),
+                    remote: "https://example.com/m.git".to_string(),
+                    r#ref: "main".to_string(),
+                },
+            )]
+            .iter()
+            .cloned()
+            .collect(),
+            plugins: vec![],
+            targets: [("claude-code".to_string(), TargetConfig::default())]
+                .iter()
+                .cloned()
+                .collect(),
+            sync: SyncConfig::default(),
+            clean: CleanConfig::default(),
+            gitignore_managed_links: false,
+            instruction_files: [("CLAUDE.md".to_string(), vec!["AGENTS.md".to_string()])]
+                .iter()
+                .cloned()
+                .collect(),
+            recursive_instruction_files: false, // Disabled
+            recursive_instruction_files_depth: 8,
+            source: Some("claude-code".to_string()),
+        };
+
+        Syncer::sync(
+            &config,
+            project.path(),
+            SyncOptions {
+                fetch: FetchPolicy::Skip,
+            },
+        )
+        .unwrap();
+
+        // Verify no recursive symlinks were created
+        assert!(
+            !project.path().join("subdir/AGENTS.md").exists(),
+            "recursive discovery should be disabled"
         );
     }
 }

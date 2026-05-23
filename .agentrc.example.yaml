@@ -122,7 +122,7 @@ plugins:
 #                   claude-code` is set (Claude reads its own .claude/
 #                   directly). Listing it has no useful effect in v1.
 #   cursor        — skills: ✓   agents: ✓ (Markdown)        hooks: ✓
-#   codex         — skills: ✓ (via .agents/)
+#   codex         — skills: ✓ (via .codex/ with per-child linking)
 #                   agents: ✓ (TRANSFORMED to TOML — drops Claude-only
 #                              frontmatter keys with warnings)
 #                   hooks:  ✓ (notify block in ~/.codex/config.toml)
@@ -139,7 +139,7 @@ plugins:
 #   cursor       skills → .cursor/skills/<name>/SKILL.md
 #                agents → .cursor/agents/<name>.md
 #                hooks  → .cursor/hooks.json
-#   codex        skills → .agents/skills/<name>/SKILL.md  (cross-tool alias)
+#   codex        skills → .codex/skills/<name>/SKILL.md   (per-child linking)
 #                agents → .codex/agents/<name>.toml       (materialized)
 #                hooks  → ~/.codex/config.toml [managed block]
 #   copilot      skills → .github/skills/<name>/SKILL.md
@@ -236,3 +236,32 @@ clean:
 #     - agents.md           # Google Antigravity
 #   CURSOR.md:
 #     - .cursor/rules/main.md
+
+
+# ─────────────────────────────────────────────────────────────────────
+# recursive_instruction_files
+# ─────────────────────────────────────────────────────────────────────
+# Enable recursive discovery of instruction files in subdirectories.
+# When true (default), agentenv applies instruction_files mappings to
+# every discovered source file in the project tree, not just the root.
+#
+# Useful in monorepos: if you have `packages/frontend/CLAUDE.md` and
+# `packages/backend/CLAUDE.md`, agentenv will automatically create
+# `packages/frontend/AGENTS.md` and `packages/backend/AGENTS.md` symlinks
+# pointing to the respective source files.
+#
+# Default: true
+# recursive_instruction_files: true
+
+
+# ─────────────────────────────────────────────────────────────────────
+# recursive_instruction_files_depth
+# ─────────────────────────────────────────────────────────────────────
+# Maximum directory depth for recursive instruction file discovery.
+# Depth 1 means only immediate children of the project root.
+#
+# The walker respects .gitignore and skips common non-source dirs
+# (node_modules, target, dist, build).
+#
+# Default: 8
+# recursive_instruction_files_depth: 8

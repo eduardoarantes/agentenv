@@ -59,12 +59,31 @@ pub struct Config {
     #[serde(default)]
     pub instruction_files: HashMap<String, Vec<String>>,
 
+    /// Enable recursive discovery of instruction files in subdirectories.
+    /// When true (default), agentenv applies instruction_files mappings to
+    /// every discovered source file in the project tree, not just the root.
+    #[serde(default = "default_recursive_instruction_files")]
+    pub recursive_instruction_files: bool,
+
+    /// Maximum directory depth for recursive instruction file discovery.
+    /// Depth 1 means only immediate children of project root.
+    #[serde(default = "default_recursive_instruction_files_depth")]
+    pub recursive_instruction_files_depth: u32,
+
     /// Source target whose native layout feeds the canonical pipelines.
     /// Read losslessly into `.agentenv/<capability>.canonical.yaml` and
     /// written out to every other configured supporting target. Mandatory
     /// when at least one target is configured.
     #[serde(default)]
     pub source: Option<String>,
+}
+
+fn default_recursive_instruction_files() -> bool {
+    true
+}
+
+fn default_recursive_instruction_files_depth() -> u32 {
+    8
 }
 
 /// Marketplace configuration
@@ -388,6 +407,8 @@ mod tests {
             clean: CleanConfig::default(),
             gitignore_managed_links: false,
             instruction_files: HashMap::new(),
+            recursive_instruction_files: true,
+            recursive_instruction_files_depth: 8,
             source: None,
         }
     }
