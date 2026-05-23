@@ -51,6 +51,8 @@ fn base_config() -> Config {
         clean: Default::default(),
         gitignore_managed_links: false,
         instruction_files: HashMap::new(),
+        recursive_instruction_files: true,
+        recursive_instruction_files_depth: 8,
         source: None,
     }
 }

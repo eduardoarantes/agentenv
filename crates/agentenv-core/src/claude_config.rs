@@ -559,6 +559,8 @@ mod tests {
             clean: CleanConfig::default(),
             gitignore_managed_links: false,
             instruction_files: HashMap::new(),
+            recursive_instruction_files: true,
+            recursive_instruction_files_depth: 8,
             source: Some("claude-code".to_string()),
         };
         for name in target_names {

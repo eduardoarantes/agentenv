@@ -103,6 +103,8 @@ mod tests {
             clean: Default::default(),
             gitignore_managed_links: false,
             instruction_files: HashMap::new(),
+            recursive_instruction_files: true,
+            recursive_instruction_files_depth: 8,
             source: None,
         }
     }
@@ -168,8 +170,14 @@ mod tests {
         assert_eq!(report.state_links.len(), 4);
         assert!(project.path().join(".cursor/skills/hello").is_symlink());
         assert!(project.path().join(".cursor/skills/world").is_symlink());
-        assert!(project.path().join(".agents/skills/hello").is_symlink());
-        assert!(project.path().join(".agents/skills/world").is_symlink());
+        assert!(project
+            .path()
+            .join(".codex/skills/hello/SKILL.md")
+            .is_symlink());
+        assert!(project
+            .path()
+            .join(".codex/skills/world/SKILL.md")
+            .is_symlink());
     }
 
     #[test]
@@ -246,8 +254,11 @@ mod tests {
 
         let report = run(&config, project.path(), &[], &State::default()).unwrap();
         assert!(report.canonical_path.is_some());
-        // codex skills land at .agents/skills/<name> (cross-tool alias).
-        assert!(project.path().join(".agents/skills/hello").is_symlink());
+        // codex skills land at .codex/skills/<name>/SKILL.md (per-child linking).
+        assert!(project
+            .path()
+            .join(".codex/skills/hello/SKILL.md")
+            .is_symlink());
         assert_eq!(report.state_links.len(), 1);
     }
 

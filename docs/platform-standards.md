@@ -65,7 +65,7 @@ Recommended `SKILL.md` ≤500 lines.
 | Tool             | Primary project       | Primary user                       | Aliases                                                                                      | Source |
 | ---------------- | --------------------- | ---------------------------------- | -------------------------------------------------------------------------------------------- | ------ |
 | Claude Code      | `.claude/skills/`     | `~/.claude/skills/`                | also discovered from nested `.claude/skills/` in subdirs (monorepo)                          | [docs](https://code.claude.com/docs/en/skills) |
-| OpenAI Codex     | `.agents/skills/`     | `~/.agents/skills/`                | walks every dir from `$CWD` up to repo root; admin: `/etc/codex/skills`                      | [docs](https://developers.openai.com/codex/skills) |
+| OpenAI Codex     | `.codex/skills/`      | `~/.codex/skills/`                 | per-child linking with `.SKILL.md` normalization (see §1.3); legacy: `.agents/skills/`      | [docs](https://developers.openai.com/codex/skills) |
 | Cursor           | `.cursor/skills/`, `.agents/skills/` | `~/.cursor/skills/`, `~/.agents/skills/` | also: `.claude/skills/`, `.codex/skills/`, `~/.claude/skills/`, `~/.codex/skills/`     | [docs](https://cursor.com/docs/context/skills) |
 | GitHub Copilot   | `.github/skills/`, `.claude/skills/`, `.agents/skills/` | `~/.copilot/skills/`, `~/.agents/skills/` | — | [docs](https://docs.github.com/en/copilot/concepts/agents/about-agent-skills) |
 | VS Code Copilot  | `.github/skills/`, `.claude/skills/`, `.agents/skills/` | `~/.copilot/skills/`, `~/.claude/skills/`, `~/.agents/skills/` | — | [docs](https://code.visualstudio.com/docs/copilot/customization/agent-skills) |
@@ -76,6 +76,21 @@ Recommended `SKILL.md` ≤500 lines.
 ¹ Antigravity's official docs site is JS-rendered; paths above came from the
 [Authoring Google Antigravity Skills](https://codelabs.developers.google.com/getting-started-with-antigravity-skills)
 codelab. Verify in-browser before shipping.
+
+### 1.3 Codex per-child linking and entry-point normalization
+
+OpenAI Codex requires skill entry points to be named `SKILL.md` (uppercase).
+When syncing skills into `.codex/skills/`, agentenv uses per-child linking
+instead of skill-level symlinks: each file and subdirectory within a skill
+directory is linked individually. This enables transparent handling of sources
+with lowercase `skill.md`:
+
+- Source skill with `skill.md` → destination `.codex/skills/<name>/SKILL.md`
+  (symlink points to source's `skill.md` with normalized name)
+- Source skill subdirectories → linked as-is (`scripts/`, `references/`, etc.)
+
+If both `SKILL.md` and `skill.md` exist in a source skill, agentenv warns and
+installs only the uppercase version.
 
 ---
 
@@ -246,6 +261,40 @@ A repo-root Markdown file that serves as a tool-agnostic instruction sheet.
 | Cursor            | repo root + nested subdirs; "more specific instructions taking precedence" | ([docs](https://cursor.com/docs/context/rules)) |
 | Junie             | `.junie/AGENTS.md` at project root | ([docs](https://junie.jetbrains.com/docs/guidelines-and-memory.html)) |
 | Antigravity       | `agents.md` at project root | Defines specialized AI personas. |
+
+### 6.1.1 Recursive discovery in monorepos
+
+Because all major tools support hierarchical instruction files in subdirectories, agentenv
+provides automatic recursive discovery. When `recursive_instruction_files: true` (the default),
+agentenv walks the project tree and applies `instruction_files` mappings to every discovered
+source file, not just the root.
+
+Example: with this configuration:
+
+```yaml
+instruction_files:
+  CLAUDE.md:
+    - AGENTS.md
+```
+
+and these files on disk:
+
+```text
+packages/frontend/CLAUDE.md
+packages/backend/CLAUDE.md
+```
+
+agentenv automatically creates symlinks at:
+
+```text
+packages/frontend/AGENTS.md  → packages/frontend/CLAUDE.md
+packages/backend/AGENTS.md   → packages/backend/CLAUDE.md
+```
+
+The walker respects `.gitignore` (for performance) and skips common non-source directories
+(`node_modules`, `target`, `dist`, `build`). Depth can be controlled via
+`recursive_instruction_files_depth` (default 8). Set `recursive_instruction_files: false`
+to disable and propagate only root-level files.
 
 ### 6.2 Cursor rules and plans
 
