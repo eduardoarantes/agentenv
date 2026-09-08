@@ -2,7 +2,7 @@
 
 use crate::config::{Config, PluginRef};
 use crate::error::{Error, Result};
-use crate::marketplace::Marketplace;
+use crate::marketplace::{EnsureBehavior, Marketplace};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -45,11 +45,22 @@ impl PluginResolver {
     /// Returns an error if a marketplace index cannot be loaded, a plugin is
     /// not found, or a requested plugin version doesn't match.
     pub fn resolve_all(config: &Config, project_root: &Path) -> Result<Vec<ResolvedPlugin>> {
+        Self::resolve_all_with_behavior(config, project_root, EnsureBehavior::Cache)
+    }
+
+    /// Resolve all plugins while controlling whether remote plugin sources
+    /// may be fetched, reused, or refreshed.
+    pub fn resolve_all_with_behavior(
+        config: &Config,
+        project_root: &Path,
+        behavior: EnsureBehavior,
+    ) -> Result<Vec<ResolvedPlugin>> {
         let mut resolved = Vec::new();
 
         for plugin in &config.plugins {
             let namespace = plugin.namespace.as_deref().unwrap_or("default");
-            let resolved_plugin = Self::resolve_plugin(config, project_root, plugin, namespace)?;
+            let resolved_plugin =
+                Self::resolve_plugin(config, project_root, plugin, namespace, behavior)?;
             resolved.push(resolved_plugin);
         }
 
@@ -62,21 +73,23 @@ impl PluginResolver {
         project_root: &Path,
         plugin_ref: &PluginRef,
         namespace: &str,
+        behavior: EnsureBehavior,
     ) -> Result<ResolvedPlugin> {
         let marketplace = config.get_marketplace(namespace).ok_or_else(|| {
             Error::Config(format!("marketplace namespace not found: {}", namespace))
         })?;
 
         let marketplace_path = marketplace.resolve_path(project_root)?;
-        let marketplace_index = Marketplace::load_from_path(&marketplace_path)?;
+        let mut marketplace_index = Marketplace::load_from_path(&marketplace_path)?;
         let plugin = marketplace_index
-            .find_plugin(&plugin_ref.name)
-            .ok_or_else(|| {
+            .materialize_plugin(&plugin_ref.name, behavior)
+            .map_err(|err| {
                 Error::PluginResolution(format!(
-                    "plugin {} not found in marketplace namespace {} ({})",
+                    "failed to resolve plugin {} in marketplace namespace {} ({}): {}",
                     plugin_ref.name,
                     namespace,
-                    marketplace_path.display()
+                    marketplace_path.display(),
+                    err
                 ))
             })?;
 

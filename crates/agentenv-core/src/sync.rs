@@ -112,7 +112,7 @@ impl Syncer {
             }
         }
 
-        let resolved = PluginResolver::resolve_all(config, project_root)?;
+        let resolved = PluginResolver::resolve_all_with_behavior(config, project_root, behavior)?;
         let old_state = State::load(project_root)?;
         let mut new_state = State::default();
 
