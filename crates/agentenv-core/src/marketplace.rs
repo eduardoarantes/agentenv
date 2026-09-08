@@ -21,12 +21,42 @@ struct MarketplaceIndex {
 #[derive(Debug, Deserialize)]
 struct MarketplaceIndexEntry {
     name: String,
-    /// Path to the plugin directory, relative to the marketplace root.
-    source: String,
+    source: MarketplaceEntrySource,
     #[serde(default)]
     version: String,
     #[serde(default)]
     description: String,
+}
+
+/// Claude marketplace entries may either point at a directory in the
+/// marketplace checkout or at a separately hosted Git repository.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum MarketplaceEntrySource {
+    Local(String),
+    Remote(RemoteMarketplaceSource),
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RemoteMarketplaceSource {
+    source: String,
+    url: String,
+    #[serde(default)]
+    path: Option<String>,
+    #[serde(default)]
+    r#ref: Option<String>,
+    #[serde(default)]
+    sha: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+enum ResolvedMarketplaceSource {
+    #[default]
+    Local,
+    Remote {
+        spec: RemoteMarketplaceSource,
+        checkout: PathBuf,
+    },
 }
 
 /// Marketplace for plugins
@@ -66,6 +96,9 @@ pub struct MarketplacePlugin {
     /// Plugin location in the marketplace
     #[serde(skip)]
     pub location: PathBuf,
+
+    #[serde(skip, default)]
+    source: ResolvedMarketplaceSource,
 }
 
 impl Marketplace {
@@ -106,20 +139,32 @@ impl Marketplace {
 
         let mut plugins = Vec::with_capacity(index.plugins.len());
         for entry in index.plugins {
-            let source = normalize_path(&root.join(&entry.source));
-            if !source.is_dir() {
-                return Err(Error::PluginResolution(format!(
-                    "plugin {} references missing source directory: {}",
-                    entry.name,
-                    source.display()
-                )));
-            }
-
-            let capabilities = KNOWN_CAPABILITIES
-                .iter()
-                .filter(|cap| source.join(cap).is_dir())
-                .map(|cap| (*cap).to_string())
-                .collect();
+            let (location, source) = match entry.source {
+                MarketplaceEntrySource::Local(relative) => {
+                    let location = normalize_path(&root.join(relative));
+                    if !location.is_dir() {
+                        return Err(Error::PluginResolution(format!(
+                            "plugin {} references missing source directory: {}",
+                            entry.name,
+                            location.display()
+                        )));
+                    }
+                    (location, ResolvedMarketplaceSource::Local)
+                },
+                MarketplaceEntrySource::Remote(spec) => {
+                    let checkout = root
+                        .join(".agentenv-plugin-cache")
+                        .join(safe_cache_name(&entry.name));
+                    let location = match spec.path.as_deref() {
+                        Some(path) => normalize_path(&checkout.join(path)),
+                        None => checkout.clone(),
+                    };
+                    (
+                        location,
+                        ResolvedMarketplaceSource::Remote { spec, checkout },
+                    )
+                },
+            };
 
             plugins.push(MarketplacePlugin {
                 name: entry.name,
@@ -127,8 +172,9 @@ impl Marketplace {
                 description: entry.description,
                 metadata: serde_json::Value::Null,
                 targets: Vec::new(),
-                capabilities,
-                location: source,
+                capabilities: discover_capabilities(&location),
+                location,
+                source,
             });
         }
 
@@ -136,6 +182,42 @@ impl Marketplace {
             version: 1,
             plugins,
         })
+    }
+
+    /// Ensure a selected plugin's source exists locally.
+    ///
+    /// Remote entries are fetched lazily so loading a marketplace index never
+    /// clones every repository listed by it.
+    pub fn materialize_plugin(
+        &mut self,
+        name: &str,
+        behavior: EnsureBehavior,
+    ) -> Result<&MarketplacePlugin> {
+        let plugin = self.find_plugin(name).ok_or_else(|| {
+            Error::PluginResolution(format!("plugin {name} not found in marketplace"))
+        })?;
+        let source = plugin.source.clone();
+
+        if let ResolvedMarketplaceSource::Remote { spec, checkout } = source {
+            ensure_remote_checkout(&spec, &checkout, behavior)?;
+            let plugin = self
+                .plugins
+                .iter_mut()
+                .find(|plugin| plugin.name == name)
+                .expect("plugin was found above");
+            if !plugin.location.is_dir() {
+                return Err(Error::PluginResolution(format!(
+                    "plugin {} references missing source directory: {}",
+                    plugin.name,
+                    plugin.location.display()
+                )));
+            }
+            plugin.capabilities = discover_capabilities(&plugin.location);
+        }
+
+        Ok(self
+            .find_plugin(name)
+            .expect("plugin remains present after materialization"))
     }
 
     /// Make sure a marketplace is available on disk under
@@ -183,6 +265,128 @@ impl Marketplace {
             },
         }
     }
+}
+
+fn discover_capabilities(source: &Path) -> Vec<String> {
+    KNOWN_CAPABILITIES
+        .iter()
+        .filter(|cap| source.join(cap).is_dir())
+        .map(|cap| (*cap).to_string())
+        .collect()
+}
+
+fn safe_cache_name(name: &str) -> String {
+    name.chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+fn ensure_remote_checkout(
+    spec: &RemoteMarketplaceSource,
+    checkout: &Path,
+    behavior: EnsureBehavior,
+) -> Result<()> {
+    if !matches!(spec.source.as_str(), "url" | "git-subdir") {
+        return Err(Error::PluginResolution(format!(
+            "unsupported remote plugin source type: {}",
+            spec.source
+        )));
+    }
+
+    match (checkout.exists(), behavior) {
+        (false, EnsureBehavior::Offline) => {
+            return Err(Error::Network(format!(
+                "remote plugin source at {} is missing and offline mode was requested",
+                checkout.display()
+            )));
+        },
+        (false, _) => clone_remote_plugin(spec, checkout)?,
+        (true, EnsureBehavior::Refetch) => refetch_remote_plugin(spec, checkout)?,
+        (true, EnsureBehavior::Cache | EnsureBehavior::Offline) => {},
+    }
+
+    if let Some(sha) = &spec.sha {
+        git_reset(checkout, sha)?;
+    }
+    Ok(())
+}
+
+fn clone_remote_plugin(spec: &RemoteMarketplaceSource, checkout: &Path) -> Result<()> {
+    if let Some(parent) = checkout.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let mut command = Command::new("git");
+    command.args(["-c", "core.autocrlf=false", "clone"]);
+    if let Some(reference) = &spec.r#ref {
+        command.args(["--branch", reference, "--single-branch"]);
+    }
+    command.arg("--").arg(&spec.url).arg(checkout);
+
+    let output = command.output().map_err(|err| {
+        Error::Network(format!(
+            "failed to invoke git: {err}. Is git installed and on PATH?"
+        ))
+    })?;
+    if !output.status.success() {
+        return Err(Error::Network(format!(
+            "git clone of {} failed: {}",
+            spec.url,
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+
+    let _ = Command::new("git")
+        .arg("-C")
+        .arg(checkout)
+        .args(["config", "core.autocrlf", "false"])
+        .output();
+    Ok(())
+}
+
+fn refetch_remote_plugin(spec: &RemoteMarketplaceSource, checkout: &Path) -> Result<()> {
+    let mut command = Command::new("git");
+    command.arg("-C").arg(checkout).args(["fetch", "origin"]);
+    if let Some(reference) = &spec.r#ref {
+        command.arg(reference);
+    }
+    let output = command
+        .output()
+        .map_err(|err| Error::Network(format!("failed to invoke git: {err}")))?;
+    if !output.status.success() {
+        return Err(Error::Network(format!(
+            "git fetch of {} failed: {}",
+            spec.url,
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+
+    if spec.sha.is_none() {
+        git_reset(checkout, "FETCH_HEAD")?;
+    }
+    Ok(())
+}
+
+fn git_reset(checkout: &Path, target: &str) -> Result<()> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(checkout)
+        .args(["reset", "--hard", target])
+        .output()
+        .map_err(|err| Error::Network(format!("failed to invoke git: {err}")))?;
+    if !output.status.success() {
+        return Err(Error::Network(format!(
+            "git reset --hard {target} failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    Ok(())
 }
 
 /// How `Marketplace::ensure` should treat an existing marketplace.
@@ -343,6 +547,69 @@ mod ensure_tests {
         run_git(&workdir, ["push", "origin", branch]);
 
         bare
+    }
+
+    #[test]
+    fn loads_remote_source_entries_without_fetching_unselected_plugins() {
+        let marketplace = TempDir::new().unwrap();
+        let claude_dir = marketplace.path().join(".claude-plugin");
+        fs::create_dir_all(&claude_dir).unwrap();
+        fs::write(
+            claude_dir.join("marketplace.json"),
+            r#"{
+                "plugins": [{
+                    "name": "remote-plugin",
+                    "source": {
+                        "source": "url",
+                        "url": "https://example.invalid/plugin.git",
+                        "sha": "0123456789abcdef"
+                    }
+                }]
+            }"#,
+        )
+        .unwrap();
+
+        let loaded = Marketplace::load_from_path(marketplace.path()).unwrap();
+        assert!(loaded.find_plugin("remote-plugin").is_some());
+        assert!(!marketplace.path().join(".agentenv-plugin-cache").exists());
+    }
+
+    #[test]
+    fn materializes_selected_remote_source_and_discovers_capabilities() {
+        let scratch = TempDir::new().unwrap();
+        let bare = seed_remote(
+            scratch.path(),
+            "main",
+            &[(
+                "skills/demo/SKILL.md",
+                "---\nname: demo\ndescription: test\n---\n",
+            )],
+        );
+        let marketplace = scratch.path().join("marketplace");
+        let claude_dir = marketplace.join(".claude-plugin");
+        fs::create_dir_all(&claude_dir).unwrap();
+        fs::write(
+            claude_dir.join("marketplace.json"),
+            serde_json::json!({
+                "plugins": [{
+                    "name": "remote-plugin",
+                    "source": {
+                        "source": "url",
+                        "url": bare.to_string_lossy()
+                    }
+                }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let mut loaded = Marketplace::load_from_path(&marketplace).unwrap();
+        let plugin = loaded
+            .materialize_plugin("remote-plugin", EnsureBehavior::Cache)
+            .unwrap();
+
+        assert!(plugin.location.is_dir());
+        assert_eq!(plugin.capabilities, vec!["skills"]);
     }
 
     /// Push a follow-up commit with the given files into the bare remote.
